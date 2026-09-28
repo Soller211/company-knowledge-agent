@@ -1,15 +1,18 @@
 """Document management for the admin panel: validate, store, list and delete files."""
 
+import contextlib
 import os
 import re
 from pathlib import Path, PurePosixPath
 
 import psycopg
 
-from cka.ingest import GENERAL, SUPPORTED_SUFFIXES
+from cka.ingest import GENERAL, INGEST_LOCK_ID, SUPPORTED_SUFFIXES
 
 COLLECTION_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
 CHUNK_BYTES = 1024 * 1024
+MAX_FILENAME_BYTES = 200  # leaves room for the ".<name>.upload" temp name within 255 bytes
+DELETE_LOCK_TIMEOUT = "5s"
 
 
 class InvalidUpload(ValueError):
@@ -18,6 +21,14 @@ class InvalidUpload(ValueError):
 
 class UploadTooLarge(InvalidUpload):
     pass
+
+
+class UploadExists(InvalidUpload):
+    pass
+
+
+class IndexBusy(Exception):
+    """An ingest is running; try again in a moment."""
 
 
 def validate_collection(name: str) -> str:
@@ -39,6 +50,8 @@ def validate_filename(name: str) -> str:
     )
     if dangerous:
         raise InvalidUpload("Nombre de archivo no válido")
+    if len(name.encode()) > MAX_FILENAME_BYTES:
+        raise InvalidUpload("Nombre de archivo demasiado largo")
     if PurePosixPath(name).suffix.lower() not in SUPPORTED_SUFFIXES:
         raise InvalidUpload("Formato no soportado: sube PDF, Word (.docx), Markdown o TXT")
     return name
@@ -57,18 +70,27 @@ def _inside(docs_dir: Path, target: Path) -> bool:
 
 
 def save_upload(
-    docs_dir: Path, collection: str, filename: str, source, max_bytes: int
+    docs_dir: Path,
+    collection: str,
+    filename: str,
+    source,
+    max_bytes: int,
+    replace: bool = False,
 ) -> PurePosixPath:
     """Write an uploaded file into its collection folder atomically.
 
-    Returns its path relative to docs_dir. A file with the same name is replaced.
+    Returns its path relative to docs_dir. An existing file is only overwritten with
+    replace=True (it may be a file synced into the folder that is not indexed yet).
     """
     collection = validate_collection(collection)
     filename = validate_filename(filename)
     folder = collection_dir(docs_dir, collection)
     target = folder / filename
     if not _inside(docs_dir, target):
-        raise InvalidUpload("Nombre de archivo no válido")
+        raise InvalidUpload("Ruta no válida: la colección apunta fuera de la carpeta de documentos")
+    if target.exists() and not replace:
+        raise UploadExists(f"Ya existe {filename} en {collection}")
+    created = not folder.exists()
     folder.mkdir(exist_ok=True)
     # Dot-prefixed temp name: ingestion ignores it while it is being written.
     temp = folder / f".{filename}.upload"
@@ -81,19 +103,35 @@ def save_upload(
                     raise UploadTooLarge(f"El archivo supera {max_bytes // (1024 * 1024)} MB")
                 out.write(chunk)
         os.replace(temp, target)
-    finally:
-        temp.unlink(missing_ok=True)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            temp.unlink(missing_ok=True)
+        if created:
+            with contextlib.suppress(OSError):
+                folder.rmdir()
+        raise
     return PurePosixPath(target.relative_to(docs_dir).as_posix())
 
 
 def delete_document(conn: psycopg.Connection, docs_dir: Path, path: str) -> None:
-    if conn.execute("SELECT 1 FROM documents WHERE path = %s", (path,)).fetchone() is None:
-        raise LookupError(path)
-    target = docs_dir / path
-    if not _inside(docs_dir, target):
-        raise InvalidUpload("Ruta no válida")
-    target.unlink(missing_ok=True)
-    conn.execute("DELETE FROM documents WHERE path = %s", (path,))
+    """Delete a document's file and index entry.
+
+    Waits (up to DELETE_LOCK_TIMEOUT) for any running ingest, which could otherwise
+    re-insert the document right after it was deleted.
+    """
+    try:
+        with conn.transaction():
+            conn.execute("SELECT set_config('lock_timeout', %s, true)", (DELETE_LOCK_TIMEOUT,))
+            conn.execute("SELECT pg_advisory_xact_lock(%s)", (INGEST_LOCK_ID,))
+            if conn.execute("SELECT 1 FROM documents WHERE path = %s", (path,)).fetchone() is None:
+                raise LookupError(path)
+            target = docs_dir / path
+            if not _inside(docs_dir, target):
+                raise InvalidUpload("Ruta no válida")
+            conn.execute("DELETE FROM documents WHERE path = %s", (path,))
+            target.unlink(missing_ok=True)
+    except psycopg.errors.LockNotAvailable:
+        raise IndexBusy() from None
 
 
 def list_documents(conn: psycopg.Connection) -> list[dict]:

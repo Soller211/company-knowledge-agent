@@ -3,6 +3,7 @@
 import hashlib
 import logging
 import os
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
@@ -25,7 +26,28 @@ READY = "ready"
 EMPTY = "empty"
 ERROR = "error"
 PROCESSING = "processing"
+MISSING = "missing"
 INTERRUPTED = "interrumpido (la API se reinició)"
+
+# Postgres advisory lock shared by every process that changes the index (API worker,
+# `cka ingest` from cron), so an admin deleting a document never races a running ingest.
+INGEST_LOCK_ID = 4_271_901
+
+
+@contextmanager
+def ingest_lock(conn: psycopg.Connection):
+    conn.execute("SELECT pg_advisory_lock(%s)", (INGEST_LOCK_ID,))
+    try:
+        yield
+    finally:
+        conn.execute("SELECT pg_advisory_unlock(%s)", (INGEST_LOCK_ID,))
+
+
+def ingest_busy(conn: psycopg.Connection) -> bool:
+    if not conn.execute("SELECT pg_try_advisory_lock(%s)", (INGEST_LOCK_ID,)).fetchone()[0]:
+        return True
+    conn.execute("SELECT pg_advisory_unlock(%s)", (INGEST_LOCK_ID,))
+    return False
 
 
 @dataclass(frozen=True)
@@ -140,7 +162,7 @@ def ingest(conn: psycopg.Connection, docs_dir: Path, embedder: Embedder) -> Inge
             report.loaded.append(key)
         elif status == EMPTY:
             report.empty.append(key)
-        else:
+        elif status == ERROR:
             report.errors[key] = error
     if walk_errors:
         for err in walk_errors:
@@ -165,6 +187,8 @@ def ingest_file(
     key = str(rel)
     collection = collection_for(rel)
     path = Path(docs_dir) / rel
+    if not path.is_file():
+        return MISSING, None  # deleted while queued: nothing to index and nothing to record
     try:
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         if digest == known_digest:

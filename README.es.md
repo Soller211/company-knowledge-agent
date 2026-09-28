@@ -89,6 +89,9 @@ Lo que se sube se guarda en la propia carpeta de documentos (`DOCS_HOST_DIR/<col
 así que el usuario del contenedor (UID 1000) debe poder escribir en ella. Los nombres de
 colección usan minúsculas, números, `-` y `_`. Las API keys se siguen gestionando con el CLI.
 
+Detrás de un proxy inverso, sube su límite de tamaño de petición al menos a `MAX_UPLOAD_MB`
+(el `client_max_body_size` por defecto de nginx es 1 MB y rechazaría casi todas las subidas).
+
 ## Elegir el modelo
 
 | Servidor | `.env` |

@@ -205,3 +205,20 @@ prueba con `TestClient` (ejecuta las `BackgroundTasks` antes de devolver la resp
 - `can_manage` y `is_admin` en `Principal`; `/me` devuelve `is_admin`.
 - CLI: `create-user --admin`, `set-admin`.
 - La interfaz (HTML/JS) se prueba a mano en el navegador.
+
+## 9. Cambios tras la revisión final
+
+- **Reemplazo explícito:** si el archivo ya existe en la carpeta (aunque no esté indexado), la
+  subida responde 409 y solo se sobrescribe con `replace=true`; el panel pide confirmación.
+- **Un solo trabajador de carga:** subidas y sincronizaciones se encolan en un único hilo
+  (`ThreadPoolExecutor(max_workers=1)`) en vez de ocupar hilos de las peticiones.
+- **Candado entre procesos:** un *advisory lock* de Postgres serializa las subidas, la
+  sincronización y `cka ingest` (cron). Borrar espera hasta 5 s a que termine una carga
+  (si no, 409), para que un documento borrado no reaparezca.
+- **Límites antes de recibir el archivo:** sin sesión → 401 y `Content-Length` por encima de
+  `MAX_UPLOAD_MB` → 413, antes de leer el cuerpo.
+- **CSRF:** las acciones de `/api/admin` exigen la cabecera `X-Requested-With: cka` (bloquea
+  formularios de otros sitios, incluso de subdominios hermanos).
+- **Errores de disco:** nombres de más de 200 bytes → 400; fallo al escribir → 500 con
+  "¿permisos?"; no quedan carpetas vacías tras un fallo.
+- **Nombres de archivo:** se rechaza cualquier nombre con `/` o `\` (no se recorta).

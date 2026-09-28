@@ -1,8 +1,9 @@
 """Web API: login, questions and the chat page."""
 
 import logging
-import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import psycopg
@@ -54,11 +55,38 @@ def create_app(settings: Settings | None = None, *, llm=None, embedder=None) -> 
         interrupted = mark_interrupted(conn)
     if interrupted:
         log.warning("%d documentos quedaron a medias por un reinicio", interrupted)
-    ingest_lock = threading.Lock()
+    # ponytail: one in-process worker for uploads and syncs; several API replicas would need a
+    # shared queue (the advisory lock already keeps them from running at the same time).
+    ingest_worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ingest")
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        yield
+        # Queued uploads left 'processing' are marked interrupted on the next start.
+        ingest_worker.shutdown(wait=False, cancel_futures=True)
     throttle = auth.LoginThrottle()
 
-    app = FastAPI(title="Company Knowledge Agent")
-    app.state.ingest_lock = ingest_lock
+    app = FastAPI(title="Company Knowledge Agent", lifespan=lifespan)
+    app.state.ingest_worker = ingest_worker
+    max_upload_bytes = settings.max_upload_mb * 1024 * 1024
+
+    # Registered before SessionMiddleware so it runs inside it and can read the session.
+    # FastAPI reads the whole multipart body before any dependency runs, so the size limit and
+    # the "logged in?" check must happen here, before the body is received.
+    @app.middleware("http")
+    async def guard_uploads(request: Request, call_next):
+        if request.method == "POST" and request.url.path == "/api/admin/documents":
+            if not request.session.get("user") and "authorization" not in request.headers:
+                return JSONResponse({"detail": "No autenticado"}, status_code=401)
+            length = request.headers.get("content-length", "")
+            if not length.isdigit():
+                return JSONResponse({"detail": "Falta el tamaño del archivo"}, status_code=411)
+            if int(length) > max_upload_bytes + 1024 * 1024:  # slack for multipart overhead
+                return JSONResponse(
+                    {"detail": f"El archivo supera {settings.max_upload_mb} MB"}, status_code=413
+                )
+        return await call_next(request)
+
     app.add_middleware(
         SessionMiddleware,
         secret_key=settings.secret_key,
@@ -169,7 +197,7 @@ def create_app(settings: Settings | None = None, *, llm=None, embedder=None) -> 
         return result
 
     app.include_router(
-        build_admin_router(settings, embedder, get_conn, require_principal, ingest_lock)
+        build_admin_router(settings, embedder, get_conn, require_principal, ingest_worker)
     )
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     return app

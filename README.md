@@ -84,6 +84,9 @@ Uploads are written into the documents folder itself (`DOCS_HOST_DIR/<collection
 that folder must be writable by the container user (UID 1000). Collection names use
 lowercase letters, digits, `-` and `_`. API keys are still managed from the CLI.
 
+Behind a reverse proxy, raise its request body limit to at least `MAX_UPLOAD_MB` (nginx's
+default `client_max_body_size` is 1 MB, which would reject most uploads).
+
 ## Choosing the model
 
 | Server | `.env` |

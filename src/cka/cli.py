@@ -9,7 +9,7 @@ from pathlib import Path
 from cka import auth, db
 from cka.config import Settings
 from cka.embeddings import make_embedder
-from cka.ingest import ingest
+from cka.ingest import ingest, ingest_lock
 
 MIN_PASSWORD_CHARS = 8
 
@@ -78,7 +78,8 @@ def _ingest(settings: Settings, reindex: bool) -> int:
         return _fail(str(exc))
     with db.connect(settings.database_url) as conn:
         try:
-            report = ingest(conn, Path(settings.docs_dir), embedder)
+            with ingest_lock(conn):
+                report = ingest(conn, Path(settings.docs_dir), embedder)
         except FileNotFoundError as exc:
             return _fail(str(exc))
     print(report.summary())

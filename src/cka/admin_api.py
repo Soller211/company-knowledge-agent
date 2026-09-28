@@ -1,17 +1,17 @@
 """Admin API for the web panel: documents, folder sync and users. Admins only."""
 
 import logging
-import threading
+from concurrent.futures import Executor
 from pathlib import Path, PurePosixPath
 from typing import Annotated
 
 from fastapi import (
     APIRouter,
-    BackgroundTasks,
     Depends,
     File,
     Form,
     HTTPException,
+    Request,
     Response,
     UploadFile,
 )
@@ -20,10 +20,20 @@ from pydantic import BaseModel, Field
 from cka import admin, auth, db
 from cka.config import Settings
 from cka.embeddings import Embedder
-from cka.ingest import collection_for, ingest, ingest_file, mark_processing
+from cka.ingest import (
+    collection_for,
+    ingest,
+    ingest_busy,
+    ingest_file,
+    ingest_lock,
+    mark_processing,
+)
 
 log = logging.getLogger("cka.admin")
 MIN_PASSWORD_CHARS = 8
+PANEL_HEADER = "x-requested-with"
+PANEL_HEADER_VALUE = "cka"
+BUSY_MESSAGE = "Hay una carga de documentos en curso, inténtalo en un momento"
 
 
 class NewUser(BaseModel):
@@ -47,10 +57,18 @@ def build_admin_router(
     embedder: Embedder,
     get_conn,
     require_principal,
-    lock: threading.Lock,
+    worker: Executor,
 ) -> APIRouter:
     docs_dir = Path(settings.docs_dir)
-    router = APIRouter(prefix="/api/admin")
+
+    def require_panel_header(request: Request) -> None:
+        # Forms auto-submitted from another site (even a sibling subdomain, which SameSite=Lax
+        # does not block) cannot set custom headers, so this stops CSRF on uploads and actions.
+        unsafe = request.method not in ("GET", "HEAD", "OPTIONS")
+        if unsafe and request.headers.get(PANEL_HEADER) != PANEL_HEADER_VALUE:
+            raise HTTPException(403, "Petición no permitida")
+
+    router = APIRouter(prefix="/api/admin", dependencies=[Depends(require_panel_header)])
 
     def require_admin(principal: auth.Principal = Depends(require_principal)) -> auth.Principal:
         if not principal.is_admin:
@@ -64,19 +82,22 @@ def build_admin_router(
     def audit(principal: auth.Principal, action: str, target) -> None:
         log.info("admin=%s action=%s target=%s", principal.name, action, target)
 
-    # ponytail: in-process lock and BackgroundTasks; several API replicas would need a queue.
+    # Jobs run one at a time on the single ingest worker, so a burst of uploads queues there
+    # instead of parking threads from the request pool. The advisory lock also serializes them
+    # with `cka ingest` running from cron in another container.
     def process_upload(rel: PurePosixPath) -> None:
-        with lock, db.connect(settings.database_url) as conn:
-            ingest_file(conn, docs_dir, rel, embedder)
+        try:
+            with db.connect(settings.database_url) as conn, ingest_lock(conn):
+                ingest_file(conn, docs_dir, rel, embedder)
+        except Exception as exc:  # noqa: BLE001 - worker job: nobody else would see the error
+            log.error("No se pudo procesar %s: %s", rel, exc)
 
     def run_sync() -> None:
         try:
-            with db.connect(settings.database_url) as conn:
+            with db.connect(settings.database_url) as conn, ingest_lock(conn):
                 log.info("Sincronización: %s", ingest(conn, docs_dir, embedder).summary())
-        except Exception as exc:  # noqa: BLE001 - background task: log it, always free the lock
+        except Exception as exc:  # noqa: BLE001 - worker job: nobody else would see the error
             log.error("La sincronización falló: %s", exc)
-        finally:
-            lock.release()
 
     @router.get("/documents")
     def list_documents(principal=Depends(require_admin), conn=Depends(get_conn)):
@@ -90,7 +111,7 @@ def build_admin_router(
     def upload_document(
         file: Annotated[UploadFile, File()],
         collection: Annotated[str, Form()],
-        background: BackgroundTasks,
+        replace: Annotated[bool, Form()] = False,
         principal: auth.Principal = Depends(require_principal),
         conn=Depends(get_conn),
     ):
@@ -103,14 +124,26 @@ def build_admin_router(
             raise HTTPException(503, "La carpeta de documentos no está disponible")
         try:
             rel = admin.save_upload(
-                docs_dir, name, file.filename or "", file.file, settings.max_upload_mb * 1024 * 1024
+                docs_dir,
+                name,
+                file.filename or "",
+                file.file,
+                settings.max_upload_mb * 1024 * 1024,
+                replace=replace,
             )
         except admin.UploadTooLarge as exc:
             raise HTTPException(413, str(exc)) from None
+        except admin.UploadExists as exc:
+            raise HTTPException(409, str(exc)) from None
         except admin.InvalidUpload as exc:
             raise HTTPException(400, str(exc)) from None
+        except OSError as exc:
+            log.error("No se pudo guardar la subida en %s: %s", docs_dir, exc)
+            raise HTTPException(
+                500, "No se pudo escribir en la carpeta de documentos (¿permisos?)"
+            ) from None
         mark_processing(conn, rel)
-        background.add_task(process_upload, rel)
+        worker.submit(process_upload, rel)
         audit(principal, "upload", rel)
         return {"path": str(rel), "status": "processing"}
 
@@ -123,16 +156,18 @@ def build_admin_router(
             admin.delete_document(conn, docs_dir, path)
         except LookupError:
             raise HTTPException(404, "Documento no encontrado") from None
+        except admin.IndexBusy:
+            raise HTTPException(409, BUSY_MESSAGE) from None
         except admin.InvalidUpload as exc:
             raise HTTPException(400, str(exc)) from None
         audit(principal, "delete", path)
         return Response(status_code=204)
 
     @router.post("/sync", status_code=202)
-    def sync(background: BackgroundTasks, principal=Depends(require_admin)):
-        if not lock.acquire(blocking=False):
-            raise HTTPException(409, "Ya hay una carga en curso, espera a que termine")
-        background.add_task(run_sync)
+    def sync(principal=Depends(require_admin), conn=Depends(get_conn)):
+        if ingest_busy(conn):
+            raise HTTPException(409, BUSY_MESSAGE)
+        worker.submit(run_sync)
         audit(principal, "sync", docs_dir)
         return {"status": "started"}
 

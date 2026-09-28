@@ -58,7 +58,7 @@ def test_save_upload_reuses_existing_uppercase_folder(tmp_path):
 
 def test_save_upload_replaces_existing_file(tmp_path):
     admin.save_upload(tmp_path, "rrhh", "a.md", io.BytesIO(b"uno"), max_bytes=100)
-    admin.save_upload(tmp_path, "rrhh", "a.md", io.BytesIO(b"dos"), max_bytes=100)
+    admin.save_upload(tmp_path, "rrhh", "a.md", io.BytesIO(b"dos"), max_bytes=100, replace=True)
     assert (tmp_path / "rrhh" / "a.md").read_bytes() == b"dos"
 
 
@@ -93,3 +93,25 @@ def test_list_documents_and_collections(conn, embedder, tmp_path):
     ]
     assert "T" in docs[0]["updated_at"]
     assert admin.list_collections(conn, tmp_path) == ["general", "rrhh", "ventas"]
+
+
+def test_existing_file_needs_replace(tmp_path):
+    admin.save_upload(tmp_path, "rrhh", "a.md", io.BytesIO(b"uno"), max_bytes=100)
+    with pytest.raises(admin.UploadExists):
+        admin.save_upload(tmp_path, "rrhh", "a.md", io.BytesIO(b"dos"), max_bytes=100)
+    assert (tmp_path / "rrhh" / "a.md").read_bytes() == b"uno"
+
+
+def test_failed_write_removes_the_new_folder(tmp_path):
+    class Broken:
+        def read(self, n):
+            raise OSError("disk full")
+
+    with pytest.raises(OSError):
+        admin.save_upload(tmp_path, "nueva", "a.md", Broken(), max_bytes=100)
+    assert not (tmp_path / "nueva").exists()
+
+
+def test_filename_length_is_capped():
+    with pytest.raises(admin.InvalidUpload, match="Nombre de archivo"):
+        admin.validate_filename("a" * 220 + ".md")

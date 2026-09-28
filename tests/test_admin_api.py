@@ -1,12 +1,13 @@
 import logging
+import os
 from pathlib import PurePosixPath
 
 import pytest
 from fastapi.testclient import TestClient
 
-from cka import auth
+from cka import admin, auth
 from cka.api import create_app
-from cka.ingest import INTERRUPTED, mark_processing
+from cka.ingest import INGEST_LOCK_ID, INTERRUPTED, mark_processing
 from conftest import ScriptedLLM, make_pdf, make_settings
 
 VACATION = "Los empleados tienen 22 dias de vacaciones al año.".encode()
@@ -26,22 +27,32 @@ def users(conn):
     return conn
 
 
-def make_client(embedder, docs_dir, user="laura", llm=None, **settings):
+def make_client(embedder, docs_dir, user="laura", llm=None, csrf=True, **settings):
     app = create_app(
         make_settings(docs_dir=str(docs_dir), **settings),
         llm=llm or ScriptedLLM(),
         embedder=embedder,
     )
     client = TestClient(app)
+    if csrf:
+        client.headers["X-Requested-With"] = "cka"
     if user:
         client.post("/login", json={"username": user, "password": f"contraseña-{user}"})
     return client
 
 
-def upload(client, name, content=VACATION, collection="rrhh"):
-    return client.post(
-        "/api/admin/documents", data={"collection": collection}, files={"file": (name, content)}
-    )
+def wait_idle(client):
+    # The ingest worker runs jobs in order, so an empty job finishes after every queued one.
+    client.app.state.ingest_worker.submit(lambda: None).result(timeout=30)
+
+
+def upload(client, name, content=VACATION, collection="rrhh", replace=False):
+    data = {"collection": collection}
+    if replace:
+        data["replace"] = "true"
+    response = client.post("/api/admin/documents", data=data, files={"file": (name, content)})
+    wait_idle(client)
+    return response
 
 
 def documents(client):
@@ -124,7 +135,10 @@ def test_upload_too_large(users, embedder, docs_dir):
 def test_upload_replaces_existing_file(users, embedder, docs_dir):
     client = make_client(embedder, docs_dir)
     upload(client, "a.md", b"version uno")
-    upload(client, "a.md", b"version dos")
+    clash = upload(client, "a.md", b"version dos")
+    assert clash.status_code == 409
+    assert "Ya existe" in clash.json()["detail"]
+    assert upload(client, "a.md", b"version dos", replace=True).status_code == 202
     contents = [r[0] for r in users.execute("SELECT content FROM chunks").fetchall()]
     assert contents == ["version dos"]
 
@@ -165,13 +179,13 @@ def test_sync_indexes_folder_changes_and_refuses_concurrent_runs(users, embedder
     (docs_dir / "general" / "horario.md").write_text("La oficina abre a las 9.", encoding="utf-8")
     client = make_client(embedder, docs_dir)
     assert client.post("/api/admin/sync").status_code == 202
+    wait_idle(client)
     assert documents(client)["general/horario.md"]["status"] == "ready"
-    lock = client.app.state.ingest_lock
-    lock.acquire()
+    users.execute("SELECT pg_advisory_lock(%s)", (INGEST_LOCK_ID,))  # e.g. the nightly ingest
     try:
         response = client.post("/api/admin/sync")
     finally:
-        lock.release()
+        users.execute("SELECT pg_advisory_unlock(%s)", (INGEST_LOCK_ID,))
     assert response.status_code == 409
 
 
@@ -246,3 +260,71 @@ def test_admin_actions_are_audited(users, embedder, docs_dir, caplog):
     upload(client, "a.md")
     assert "admin=laura action=upload target=rrhh/a.md" in caplog.text
     assert "22 dias" not in caplog.text
+
+
+def test_mutations_require_the_panel_header(users, embedder, docs_dir):
+    # A form auto-submitted from another site on the same domain cannot add this header.
+    client = make_client(embedder, docs_dir, csrf=False)
+    assert client.post("/api/admin/sync").status_code == 403
+    assert upload(client, "a.md").status_code == 403
+    assert client.get("/api/admin/documents").status_code == 200
+
+
+def test_oversized_upload_is_rejected_from_its_declared_size(users, embedder, docs_dir):
+    client = make_client(embedder, docs_dir, max_upload_mb=1)
+    response = upload(client, "grande.md", b"x" * (3 * 1024 * 1024))
+    assert response.status_code == 413
+    assert "1 MB" in response.json()["detail"]
+
+
+def test_delete_waits_for_a_running_ingest_instead_of_racing_it(users, embedder, docs_dir, monkeypatch):
+    client = make_client(embedder, docs_dir)
+    upload(client, "a.md")
+    monkeypatch.setattr(admin, "DELETE_LOCK_TIMEOUT", "200ms")
+    users.execute("SELECT pg_advisory_lock(%s)", (INGEST_LOCK_ID,))
+    try:
+        response = client.delete("/api/admin/documents/rrhh/a.md")
+    finally:
+        users.execute("SELECT pg_advisory_unlock(%s)", (INGEST_LOCK_ID,))
+    assert response.status_code == 409
+    assert (docs_dir / "rrhh" / "a.md").exists()
+    assert client.delete("/api/admin/documents/rrhh/a.md").status_code == 204
+
+
+def test_long_filename_is_rejected(users, embedder, docs_dir):
+    response = upload(make_client(embedder, docs_dir), "a" * 220 + ".md")
+    assert response.status_code == 400
+    assert not (docs_dir / "rrhh").exists()
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_unwritable_docs_dir_gives_a_clear_error(users, embedder, docs_dir):
+    client = make_client(embedder, docs_dir)
+    docs_dir.chmod(0o555)
+    try:
+        response = upload(client, "a.md", collection="nueva")
+    finally:
+        docs_dir.chmod(0o755)
+    assert response.status_code == 500
+    assert "permisos" in response.json()["detail"]
+    assert not (docs_dir / "nueva").exists()
+
+
+def test_symlinked_collection_pointing_outside_is_rejected(users, embedder, docs_dir, tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (docs_dir / "rrhh").symlink_to(outside, target_is_directory=True)
+    response = upload(make_client(embedder, docs_dir), "a.md")
+    assert response.status_code == 400
+    assert list(outside.iterdir()) == []
+
+
+def test_delete_never_removes_files_outside_docs_dir(users, embedder, docs_dir, tmp_path):
+    secret = tmp_path / "secret.md"
+    secret.write_text("fuera", encoding="utf-8")
+    (docs_dir / "rrhh").mkdir()
+    (docs_dir / "rrhh" / "x.md").symlink_to(secret)
+    users.execute("INSERT INTO documents (path, collection, sha256) VALUES ('rrhh/x.md', 'rrhh', 'h')")
+    response = make_client(embedder, docs_dir).delete("/api/admin/documents/rrhh/x.md")
+    assert response.status_code == 400
+    assert secret.exists()

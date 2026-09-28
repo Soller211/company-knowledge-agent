@@ -230,3 +230,8 @@ def test_mark_processing_then_interrupted(conn, tmp_path):
     assert row == ("rrhh", "processing", None)
     assert mark_interrupted(conn) == 1
     assert doc_status(conn)["rrhh/nuevo.pdf"] == ("error", INTERRUPTED)
+
+
+def test_ingest_file_skips_a_file_deleted_while_queued(conn, embedder, tmp_path):
+    assert ingest_file(conn, tmp_path, PurePosixPath("rrhh/borrado.md"), embedder) == ("missing", None)
+    assert conn.execute("SELECT count(*) FROM documents").fetchone()[0] == 0

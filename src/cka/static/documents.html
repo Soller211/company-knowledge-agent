@@ -137,25 +137,32 @@ async function removeDocument(doc) {
   load();
 }
 
+function send(file, collection, replace) {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("collection", collection);
+  if (replace) form.append("replace", "true");
+  return api("/api/admin/documents", {method: "POST", form});
+}
+
 async function uploadFiles(files) {
   if (!files.length) return;
   const collection = $("collection").value;
   if (!collection || collection === NEW_COLLECTION) { setStatus("Elige una colección."); return; }
-  const clashes = files.filter((f) => documents.some((d) => d.collection === collection && baseName(d.path) === f.name));
-  if (clashes.length && !confirm(`Ya existe en ${collection}: ${clashes.map((f) => f.name).join(", ")}. ¿Reemplazar?`)) return;
   for (const file of files) {
     setStatus(`Subiendo ${file.name}…`);
-    const form = new FormData();
-    form.append("file", file);
-    form.append("collection", collection);
-    const result = await api("/api/admin/documents", {method: "POST", form});
+    let result = await send(file, collection, false);
+    if (result.status === 409) {
+      if (!confirm(`${errorText(result.data, "Ya existe ese archivo")}. ¿Reemplazarlo?`)) continue;
+      result = await send(file, collection, true);
+    }
     if (!result.ok) {
       setStatus(`${file.name}: ${errorText(result.data, "no se pudo subir")}`);
       await load();
       return;
     }
   }
-  setStatus(files.length === 1 ? "Archivo subido. Procesando…" : `${files.length} archivos subidos. Procesando…`);
+  setStatus(files.length === 1 ? "Archivo subido. Procesando…" : "Archivos subidos. Procesando…");
   load();
 }
 

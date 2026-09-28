@@ -32,7 +32,8 @@ function iconButton(name, label) {
 }
 
 async function api(path, {method = "GET", json, form} = {}) {
-  const options = {method, headers: {}};
+  // The API requires this header on admin actions: forms from other sites cannot send it.
+  const options = {method, headers: {"X-Requested-With": "cka"}};
   if (json !== undefined) {
     options.headers["Content-Type"] = "application/json";
     options.body = JSON.stringify(json);
