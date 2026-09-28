@@ -2,6 +2,7 @@
 
 import hashlib
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
@@ -98,11 +99,23 @@ def ingest(conn: psycopg.Connection, docs_dir: Path, embedder: Embedder) -> Inge
         raise FileNotFoundError(f"DOCS_DIR no existe o no es una carpeta: {docs_dir}")
     report = IngestReport()
     known = dict(conn.execute("SELECT path, sha256 FROM documents").fetchall())
+    # os.walk instead of rglob: rglob silently skips folders it cannot read, which would make
+    # their documents look deleted.
+    walk_errors: list[OSError] = []
+    files = []
+    for root, _dirs, names in os.walk(docs_dir, onerror=walk_errors.append):
+        for name in names:
+            path = Path(root) / name
+            rel = PurePosixPath(path.relative_to(docs_dir).as_posix())
+            if path.is_file() and should_index(rel):
+                files.append((path, rel))
+    if not files and known and not walk_errors:
+        raise FileNotFoundError(
+            f"DOCS_DIR no contiene documentos: {docs_dir}. No se borra nada del índice "
+            "(¿carpeta sin montar o sin sincronizar?)."
+        )
     seen: set[str] = set()
-    for path in sorted(docs_dir.rglob("*")):
-        rel = PurePosixPath(path.relative_to(docs_dir).as_posix())
-        if not path.is_file() or not should_index(rel):
-            continue
+    for path, rel in sorted(files):
         key = str(rel)
         seen.add(key)
         try:
@@ -122,6 +135,12 @@ def ingest(conn: psycopg.Connection, docs_dir: Path, embedder: Embedder) -> Inge
         else:
             log.warning("%s no tiene texto extraíble (¿PDF escaneado?)", key)
             report.empty.append(key)
+    if walk_errors:
+        for err in walk_errors:
+            folder = Path(err.filename).relative_to(docs_dir).as_posix()
+            report.errors[folder] = f"no se pudo leer la carpeta: {err.strerror}"
+        log.warning("Hay carpetas ilegibles: no se borra ningún documento del índice")
+        return report
     for key in sorted(known.keys() - seen):
         conn.execute("DELETE FROM documents WHERE path = %s", (key,))
         report.removed.append(key)

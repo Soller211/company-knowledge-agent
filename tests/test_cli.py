@@ -101,3 +101,12 @@ def test_ingest_with_changed_model_requires_reindex(env, db_url, capsys):
     assert cli.main(["ingest"]) == 1
     assert "--reindex" in capsys.readouterr().err
     assert cli.main(["ingest", "--reindex"]) == 0
+
+
+def test_reindex_with_missing_docs_dir_keeps_index(env, db_url, monkeypatch):
+    write_doc(env, "a.md", "contenido")
+    assert cli.main(["ingest"]) == 0
+    monkeypatch.setenv("DOCS_DIR", str(env / "no-existe"))
+    assert cli.main(["ingest", "--reindex"]) == 1
+    with connect(db_url) as conn:
+        assert conn.execute("SELECT count(*) FROM chunks").fetchone()[0] == 1

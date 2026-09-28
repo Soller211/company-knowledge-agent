@@ -62,6 +62,9 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _ingest(settings: Settings, reindex: bool) -> int:
+    # Checked before anything else: --reindex must never drop the index for a missing folder.
+    if not Path(settings.docs_dir).is_dir():
+        return _fail(f"DOCS_DIR no existe o no es una carpeta: {settings.docs_dir}")
     embedder = make_embedder(settings)
     if reindex:
         db.reset_index(settings.database_url)

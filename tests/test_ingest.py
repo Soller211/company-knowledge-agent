@@ -1,3 +1,5 @@
+import os
+
 import pytest
 
 from cka.ingest import ingest
@@ -51,12 +53,13 @@ def test_modified_file_replaces_old_chunks(conn, embedder, tmp_path):
 
 def test_deleted_file_is_removed(conn, embedder, tmp_path):
     path = write_doc(tmp_path, "a.md", "se va a borrar")
+    write_doc(tmp_path, "b.md", "se queda")
     ingest(conn, tmp_path, embedder)
     path.unlink()
     report = ingest(conn, tmp_path, embedder)
     assert report.removed == ["a.md"]
-    assert chunk_rows(conn) == []
-    assert conn.execute("SELECT count(*) FROM documents").fetchone()[0] == 0
+    assert [r[0] for r in chunk_rows(conn)] == ["b.md"]
+    assert conn.execute("SELECT count(*) FROM documents").fetchone()[0] == 1
 
 
 def test_file_moved_between_collections_follows_new_folder(conn, embedder, tmp_path):
@@ -125,3 +128,32 @@ def test_missing_docs_dir_raises_instead_of_wiping_index(conn, embedder, tmp_pat
     with pytest.raises(FileNotFoundError):
         ingest(conn, tmp_path / "no-existe", embedder)
     assert len(chunk_rows(conn)) == 1
+
+
+def test_empty_docs_dir_does_not_wipe_index(conn, embedder, tmp_path):
+    # An unmounted OneDrive folder or a bind mount Docker created empty looks like this.
+    write_doc(tmp_path / "docs", "a.md", "no me borres")
+    ingest(conn, tmp_path / "docs", embedder)
+    (tmp_path / "empty").mkdir()
+    with pytest.raises(FileNotFoundError, match="no contiene documentos"):
+        ingest(conn, tmp_path / "empty", embedder)
+    assert len(chunk_rows(conn)) == 1
+
+
+def test_first_ingest_of_empty_dir_is_fine(conn, embedder, tmp_path):
+    assert ingest(conn, tmp_path, embedder).loaded == []
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_unreadable_subfolder_keeps_its_documents(conn, embedder, tmp_path):
+    write_doc(tmp_path, "rrhh/a.md", "contenido de rrhh")
+    write_doc(tmp_path, "general/b.md", "contenido general")
+    ingest(conn, tmp_path, embedder)
+    (tmp_path / "rrhh").chmod(0)
+    try:
+        report = ingest(conn, tmp_path, embedder)
+    finally:
+        (tmp_path / "rrhh").chmod(0o755)
+    assert "rrhh" in report.errors
+    assert report.removed == []
+    assert {r[0] for r in chunk_rows(conn)} == {"general/b.md", "rrhh/a.md"}
