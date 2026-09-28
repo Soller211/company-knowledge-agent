@@ -1,0 +1,21 @@
+services:
+  db:
+    image: pgvector/pgvector:0.8.0-pg17
+    environment:
+      POSTGRES_USER: cka
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cka}
+      POSTGRES_DB: cka
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/initdb:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cka -d cka"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  pgdata:
