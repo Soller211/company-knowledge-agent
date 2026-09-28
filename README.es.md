@@ -33,7 +33,7 @@ documentos/           cka ingest                    Postgres + pgvector
 Requisitos: Docker con Docker Compose y acceso a un LLM.
 
 ```bash
-git clone https://github.com/<tu-usuario>/company-knowledge-agent && cd company-knowledge-agent
+git clone https://github.com/Soller211/company-knowledge-agent && cd company-knowledge-agent
 cp .env.example .env
 # edita .env: SECRET_KEY y las variables LLM_* (ver "Elegir el modelo")
 docker compose up -d --build
