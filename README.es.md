@@ -162,6 +162,8 @@ uv run ruff check .
 uv run --env-file .env uvicorn cka.api:create_app --factory --reload
 ```
 
+Notas de diseño: [docs/design.md](docs/design.md).
+
 ## Próximos pasos
 
 - Inicio de sesión con Microsoft Entra ID / Google (OIDC)

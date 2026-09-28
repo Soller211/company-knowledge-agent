@@ -1,7 +1,7 @@
 # Company Knowledge Agent — Diseño
 
 Fecha: 2026-09-27
-Estado: pendiente de revisión
+Estado: implementado (v0.1.0)
 
 ## 1. Objetivo
 

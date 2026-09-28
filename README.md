@@ -156,6 +156,8 @@ uv run ruff check .
 uv run --env-file .env uvicorn cka.api:create_app --factory --reload
 ```
 
+Design notes (in Spanish): [docs/design.md](docs/design.md).
+
 ## Roadmap
 
 - Sign-in with Microsoft Entra ID / Google (OIDC)
