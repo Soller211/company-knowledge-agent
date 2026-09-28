@@ -1,3 +1,17 @@
+x-app: &app
+  build: .
+  image: company-knowledge-agent:local
+  env_file: .env
+  environment:
+    DATABASE_URL: postgresql://cka:${POSTGRES_PASSWORD:-cka}@db:5432/cka
+    DOCS_DIR: /data/docs
+  volumes:
+    - ${DOCS_HOST_DIR:-./examples/docs}:/data/docs:ro
+    - models:/models
+  depends_on:
+    db:
+      condition: service_healthy
+
 services:
   db:
     image: pgvector/pgvector:0.8.0-pg17
@@ -17,5 +31,18 @@ services:
       retries: 10
     restart: unless-stopped
 
+  api:
+    <<: *app
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  # One-off: docker compose run --rm ingest
+  ingest:
+    <<: *app
+    command: ["cka", "ingest"]
+    profiles: ["tools"]
+
 volumes:
   pgdata:
+  models:
