@@ -60,6 +60,9 @@ documentos/
 - Se ignoran los archivos de bloqueo de Office (`~$archivo.docx`) y los archivos o carpetas
   ocultos.
 - Los PDF escaneados sin texto se saltan con un aviso (todavía no hay OCR).
+- Si la carpeta está vacía o alguna subcarpeta no se puede leer (por ejemplo, OneDrive sin
+  montar o sin sincronizar), la carga se detiene sin borrar nada del índice. Para vaciar el
+  índice a propósito, ejecuta `cka ingest --reindex`.
 - **Pon un documento en una carpeta solo si todos los que tienen esa colección pueden leerlo.**
 
 Vuelve a ejecutar `docker compose run --rm ingest` cuando cambien los documentos: solo se
@@ -129,6 +132,9 @@ disponibles.
 
 - Sírvelo detrás del proxy HTTPS de tu empresa y pon `COOKIE_SECURE=true`. **No lo expongas
   directamente a internet.**
+- Por defecto la API solo escucha en `127.0.0.1`. Pon `API_BIND=0.0.0.0` en el `.env` solo si
+  un proxy en otra máquina necesita llegar a ella.
+- Cambiar la contraseña de un usuario (`cka set-password`) cierra todas sus sesiones abiertas.
 - Los logs guardan quién preguntó, cuándo, en qué colecciones y cuánto tardó; nunca la
   pregunta ni la respuesta.
 - Las contraseñas se guardan con scrypt; las API keys, como hash SHA-256.

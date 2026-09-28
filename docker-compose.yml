@@ -6,6 +6,8 @@ x-app: &app
     DATABASE_URL: postgresql://cka:${POSTGRES_PASSWORD:-cka}@db:5432/cka
     DOCS_DIR: /data/docs
   volumes:
+    # A missing DOCS_HOST_DIR is mounted as an empty folder; `cka ingest` refuses to treat
+    # an empty folder as "every document was deleted".
     - ${DOCS_HOST_DIR:-./examples/docs}:/data/docs:ro
     - models:/models
   depends_on:
@@ -34,7 +36,8 @@ services:
   api:
     <<: *app
     ports:
-      - "8000:8000"
+      # Localhost only by default. Set API_BIND=0.0.0.0 only behind an HTTPS reverse proxy.
+      - "${API_BIND:-127.0.0.1}:8000:8000"
     restart: unless-stopped
 
   # One-off: docker compose run --rm ingest

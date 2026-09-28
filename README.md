@@ -57,6 +57,9 @@ documents/
 - Collection names are case-insensitive (`RRHH/` and `rrhh` are the same collection).
 - Office lock files (`~$file.docx`) and hidden files/folders are ignored.
 - Scanned PDFs without a text layer are skipped with a warning (no OCR yet).
+- If the folder is empty or a subfolder can't be read (for example an unmounted or unsynced
+  OneDrive folder), ingest stops without deleting anything from the index. To empty the index
+  on purpose, run `cka ingest --reindex`.
 - **Only put a document in a folder if everyone with that collection may read it.**
 
 Re-run `docker compose run --rm ingest` whenever documents change: only new or modified files
@@ -124,6 +127,9 @@ many failed logins, `503` model or database unavailable.
 
 - Serve it behind your company's HTTPS reverse proxy and set `COOKIE_SECURE=true`. **Do not
   expose it directly to the internet.**
+- The API only listens on `127.0.0.1` by default. Set `API_BIND=0.0.0.0` in `.env` only when
+  a reverse proxy on another machine must reach it.
+- Changing a user's password (`cka set-password`) signs out all of their open sessions.
 - Logs record who asked, when, in which collections and how long it took — never the question
   or the answer.
 - Passwords are hashed with scrypt; API keys are stored as SHA-256 hashes.

@@ -7,3 +7,12 @@ __pycache__/
 # Real company documents must never be committed. Keep them outside the repo
 # (DOCS_HOST_DIR) or in data/, which is ignored.
 /data/
+/documents/
+/documentos/
+# Office/PDF files anywhere in the repo are assumed to be real documents.
+*.pdf
+*.docx
+*.doc
+*.xlsx
+*.pptx
+!/examples/docs/**
