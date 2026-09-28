@@ -176,6 +176,21 @@ def principal_from_api_key(conn: psycopg.Connection, raw: str) -> Principal | No
     return Principal(f"api:{row[0]}", normalize_collections(row[1])) if row else None
 
 
+def _session_epoch(password_hash: str) -> str:
+    # Changes whenever the password changes (new salt), and when a user is deleted and
+    # re-created, so old session cookies stop working in both cases.
+    return hashlib.sha256(password_hash.encode()).hexdigest()[:16]
+
+
+def start_session(conn: psycopg.Connection, session: dict, username: str) -> None:
+    row = conn.execute(
+        "SELECT password_hash FROM users WHERE username = %s", (username,)
+    ).fetchone()
+    session.clear()
+    session["user"] = username
+    session["epoch"] = _session_epoch(row[0])
+
+
 def get_principal(request, conn: psycopg.Connection) -> Principal | None:
     """Who is calling and which collections they may read. The one place to add SSO/OIDC."""
     header = request.headers.get("authorization", "")
@@ -184,6 +199,10 @@ def get_principal(request, conn: psycopg.Connection) -> Principal | None:
     username = request.session.get("user")
     if not username:
         return None
-    # Collections are read on every request so permission changes apply immediately.
-    row = conn.execute("SELECT collections FROM users WHERE username = %s", (username,)).fetchone()
-    return Principal(username, normalize_collections(row[0])) if row else None
+    # Read on every request so permission and password changes apply immediately.
+    row = conn.execute(
+        "SELECT collections, password_hash FROM users WHERE username = %s", (username,)
+    ).fetchone()
+    if row is None or request.session.get("epoch") != _session_epoch(row[1]):
+        return None
+    return Principal(username, normalize_collections(row[0]))

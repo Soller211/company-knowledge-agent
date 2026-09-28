@@ -157,3 +157,10 @@ def test_logs_never_contain_the_question(seeded, embedder, caplog):
     assert "ask principal=ana" in caplog.text
     assert "PREGUNTA-SECRETA-123" not in caplog.text
     assert "22 dias" not in caplog.text
+
+
+def test_password_change_logs_out_open_sessions(seeded, embedder):
+    client = client_for(embedder, ScriptedLLM())
+    login(client)
+    auth.set_password(seeded, "ana", "clave-nueva-123")
+    assert client.get("/me").status_code == 401

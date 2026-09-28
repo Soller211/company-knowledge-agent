@@ -102,8 +102,7 @@ def create_app(settings: Settings | None = None, *, llm=None, embedder=None) -> 
             ) from None
         if principal is None:
             raise HTTPException(401, "Usuario o contraseña incorrectos")
-        request.session.clear()
-        request.session["user"] = principal.name
+        auth.start_session(conn, request.session, principal.name)
         return {"user": principal.name, "collections": list(principal.collections)}
 
     @app.post("/logout")

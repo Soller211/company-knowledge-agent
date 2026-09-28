@@ -9,6 +9,12 @@ def fake_request(headers=None, session=None):
     return SimpleNamespace(headers=headers or {}, session=session or {})
 
 
+def session_for(conn, username):
+    session = {}
+    auth.start_session(conn, session, username)
+    return fake_request(session=session)
+
+
 def test_password_hash_roundtrip():
     stored = auth.hash_password("secreto-123")
     assert stored.startswith("scrypt$")
@@ -112,7 +118,7 @@ def test_get_principal_from_bearer_or_session(conn):
     raw = auth.create_api_key(conn, "bot", ["ventas"])
     by_key = auth.get_principal(fake_request(headers={"authorization": f"Bearer {raw}"}), conn)
     assert by_key.name == "api:bot"
-    by_session = auth.get_principal(fake_request(session={"user": "ana"}), conn)
+    by_session = auth.get_principal(session_for(conn, "ana"), conn)
     assert by_session.collections == ("general", "rrhh")
     assert auth.get_principal(fake_request(), conn) is None
     bad_key_with_session = fake_request(
@@ -123,8 +129,29 @@ def test_get_principal_from_bearer_or_session(conn):
 
 def test_session_reflects_permission_changes_immediately(conn):
     auth.create_user(conn, "ana", "contraseña-ana", ["rrhh"])
-    request = fake_request(session={"user": "ana"})
+    request = session_for(conn, "ana")
     auth.set_collections(conn, "ana", ["finanzas"])
     assert auth.get_principal(request, conn).collections == ("finanzas", "general")
     auth.delete_user(conn, "ana")
+    assert auth.get_principal(request, conn) is None
+
+
+def test_session_without_epoch_is_rejected(conn):
+    auth.create_user(conn, "ana", "contraseña-ana", [])
+    assert auth.get_principal(fake_request(session={"user": "ana"}), conn) is None
+
+
+def test_password_change_invalidates_open_sessions(conn):
+    auth.create_user(conn, "ana", "contraseña-ana", [])
+    request = session_for(conn, "ana")
+    assert auth.get_principal(request, conn) is not None
+    auth.set_password(conn, "ana", "nueva-contraseña")
+    assert auth.get_principal(request, conn) is None
+
+
+def test_recreated_user_does_not_inherit_old_sessions(conn):
+    auth.create_user(conn, "ana", "contraseña-ana", ["rrhh"])
+    request = session_for(conn, "ana")
+    auth.delete_user(conn, "ana")
+    auth.create_user(conn, "ana", "otra-contraseña", ["finanzas"])
     assert auth.get_principal(request, conn) is None
