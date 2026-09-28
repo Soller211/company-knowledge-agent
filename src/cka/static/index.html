@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Company Knowledge Agent</title>
+<style>
+  :root { --bg:#f7f7f5; --fg:#1d1d1b; --muted:#6b6b66; --line:#deded8; --accent:#2f5d50; --card:#fff; --warn:#9a5200; --error:#b3261e; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#161615; --fg:#ececea; --muted:#a3a39d; --line:#33332f; --accent:#7fb8a4; --card:#1f1f1d; --warn:#f0b35a; --error:#f2b8b5; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 16px/1.5 system-ui, sans-serif; background: var(--bg); color: var(--fg); }
+  main { max-width: 760px; margin: 0 auto; padding: 24px 16px; }
+  header { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 16px; }
+  h1 { font-size: 1.2rem; margin: 0; }
+  form { display: flex; gap: 8px; flex-wrap: wrap; }
+  input, textarea, button { font: inherit; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); color: var(--fg); }
+  input { flex: 1 1 180px; }
+  textarea { flex: 1 1 300px; min-height: 48px; resize: vertical; }
+  button { background: var(--accent); color: var(--bg); border-color: var(--accent); cursor: pointer; }
+  button:disabled { opacity: .6; cursor: wait; }
+  button.link { background: none; color: var(--muted); border: none; padding: 0; text-decoration: underline; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .msg { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin: 12px 0; white-space: pre-wrap; }
+  .msg.user { border-color: var(--accent); }
+  .sources { margin: 8px 0 0; padding-left: 18px; font-size: .875rem; color: var(--muted); white-space: normal; }
+  .sources li { margin: 4px 0; }
+  .warn { color: var(--warn); font-size: .875rem; margin-top: 8px; white-space: normal; }
+  .error { color: var(--error); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <header><h1>Company Knowledge Agent</h1><span id="who"></span></header>
+
+  <section id="login-view" hidden>
+    <form id="login-form">
+      <input name="username" placeholder="Usuario" aria-label="Usuario" autocomplete="username" required>
+      <input name="password" type="password" placeholder="Contraseña" aria-label="Contraseña" autocomplete="current-password" required>
+      <button>Entrar</button>
+    </form>
+    <p id="login-error" class="error" role="alert"></p>
+  </section>
+
+  <section id="chat-view" hidden>
+    <div id="log" aria-live="polite"></div>
+    <form id="ask-form">
+      <textarea name="question" placeholder="Pregunta sobre la empresa…" aria-label="Pregunta" maxlength="2000" required></textarea>
+      <button>Preguntar</button>
+    </form>
+  </section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+
+async function api(path, body) {
+  const options = body === undefined ? {} : {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body),
+  };
+  const response = await fetch(path, options);
+  const data = await response.json().catch(() => ({}));
+  return {status: response.status, data};
+}
+
+function show(loggedIn, user) {
+  $("login-view").hidden = loggedIn;
+  $("chat-view").hidden = !loggedIn;
+  $("who").replaceChildren();
+  if (!loggedIn) return;
+  const logout = document.createElement("button");
+  logout.className = "link";
+  logout.textContent = "Salir";
+  logout.onclick = async () => { await api("/logout", {}); show(false); };
+  $("who").append(`${user} · `, logout);
+}
+
+function addMessage(text, kind) {
+  const div = document.createElement("div");
+  div.className = `msg ${kind}`;
+  div.textContent = text;
+  $("log").append(div);
+  div.scrollIntoView({behavior: "smooth", block: "end"});
+  return div;
+}
+
+function addSources(div, data) {
+  if (!data.verified) {
+    const warning = document.createElement("div");
+    warning.className = "warn";
+    warning.textContent = "⚠ Respuesta sin citas verificadas: compruébala en los documentos.";
+    div.append(warning);
+  }
+  if (!data.citations.length) return;
+  const list = document.createElement("ul");
+  list.className = "sources";
+  for (const c of data.citations) {
+    const item = document.createElement("li");
+    item.textContent = `[${c.n}] ${c.file}${c.page ? `, p. ${c.page}` : ""} — ${c.snippet}`;
+    list.append(item);
+  }
+  div.append(list);
+}
+
+$("login-form").onsubmit = async (event) => {
+  event.preventDefault();
+  const form = new FormData(event.target);
+  const {status, data} = await api("/login", {username: form.get("username"), password: form.get("password")});
+  if (status === 200) {
+    event.target.reset();
+    $("login-error").textContent = "";
+    show(true, data.user);
+  } else {
+    $("login-error").textContent = typeof data.detail === "string" ? data.detail : "No se pudo iniciar sesión";
+  }
+};
+
+$("ask-form").onsubmit = async (event) => {
+  event.preventDefault();
+  const question = event.target.question.value.trim();
+  if (!question) return;
+  event.target.question.value = "";
+  addMessage(question, "user");
+  const pending = addMessage("Buscando…", "bot");
+  const button = event.target.querySelector("button");
+  button.disabled = true;
+  try {
+    const {status, data} = await api("/ask", {question});
+    if (status === 401) { pending.remove(); show(false); return; }
+    if (status !== 200) {
+      pending.textContent = typeof data.detail === "string" ? data.detail : "Error inesperado";
+      pending.classList.add("error");
+      return;
+    }
+    pending.textContent = data.answer;
+    addSources(pending, data);
+  } catch {
+    pending.textContent = "No se pudo conectar con el servidor";
+    pending.classList.add("error");
+  } finally {
+    button.disabled = false;
+  }
+};
+
+$("ask-form").question.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    $("ask-form").requestSubmit();
+  }
+});
+
+api("/me").then(({status, data}) => show(status === 200, data.user));
+</script>
+</body>
+</html>
