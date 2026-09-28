@@ -183,3 +183,38 @@ def test_revoked_api_key_name_can_be_reused(conn):
     new = auth.create_api_key(conn, "intranet", ["ventas"])
     assert auth.principal_from_api_key(conn, old) is None
     assert auth.principal_from_api_key(conn, new).collections == ("general", "ventas")
+
+
+def test_admin_flag_flows_into_principal(conn):
+    auth.create_user(conn, "laura", "contraseña-laura", [], is_admin=True)
+    auth.create_user(conn, "ana", "contraseña-ana", ["rrhh"])
+    throttle = auth.LoginThrottle()
+    assert auth.authenticate(conn, "laura", "contraseña-laura", throttle).is_admin is True
+    assert auth.authenticate(conn, "ana", "contraseña-ana", throttle).is_admin is False
+    assert auth.get_principal(session_for(conn, "laura"), conn).is_admin is True
+
+
+def test_set_admin_applies_to_open_sessions(conn):
+    auth.create_user(conn, "ana", "contraseña-ana", [])
+    request = session_for(conn, "ana")
+    assert auth.set_admin(conn, "ana", True)
+    assert auth.get_principal(request, conn).is_admin is True
+    assert not auth.set_admin(conn, "nadie", True)
+
+
+def test_list_and_get_users(conn):
+    auth.create_user(conn, "Ana", "contraseña-ana", ["RRHH"])
+    auth.create_user(conn, "laura", "contraseña-laura", [], is_admin=True)
+    assert auth.list_users(conn) == [
+        {"username": "ana", "collections": ["general", "rrhh"], "is_admin": False},
+        {"username": "laura", "collections": ["general"], "is_admin": True},
+    ]
+    assert auth.get_user(conn, "ANA")["username"] == "ana"
+    assert auth.get_user(conn, "nadie") is None
+
+
+def test_can_manage_is_admin_only_and_api_keys_never_admin(conn):
+    assert auth.can_manage(auth.Principal("laura", ("general",), is_admin=True), "rrhh")
+    assert not auth.can_manage(auth.Principal("ana", ("general", "rrhh")), "rrhh")
+    raw = auth.create_api_key(conn, "bot", ["rrhh"])
+    assert auth.principal_from_api_key(conn, raw).is_admin is False

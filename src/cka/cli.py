@@ -46,6 +46,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--collections", type=_collections, default=[], help="Comma-separated, e.g. rrhh,ventas"
     )
+    p.add_argument("--admin", action="store_true", help="Can manage documents and users")
     p = sub.add_parser("set-password", help="Change a user's password")
     p.add_argument("username")
     p = sub.add_parser("set-collections", help="Replace a user's collections")
@@ -53,6 +54,9 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--collections", type=_collections, required=True)
     p = sub.add_parser("delete-user", help="Delete a user")
     p.add_argument("username")
+    p = sub.add_parser("set-admin", help="Grant the admin role (--no to revoke it)")
+    p.add_argument("username")
+    p.add_argument("--no", action="store_true", dest="revoke", help="Revoke the admin role")
     p = sub.add_parser("create-api-key", help="Create an API key for another system (shown once)")
     p.add_argument("name")
     p.add_argument("--collections", type=_collections, default=[])
@@ -94,7 +98,9 @@ def main(argv: list[str] | None = None) -> int:
     with db.connect(settings.database_url) as conn:
         if args.command == "create-user":
             try:
-                auth.create_user(conn, args.username, _read_password(), args.collections)
+                auth.create_user(
+                    conn, args.username, _read_password(), args.collections, is_admin=args.admin
+                )
             except ValueError as exc:
                 return _fail(str(exc))
             print(f"Usuario {args.username} creado")
@@ -111,6 +117,11 @@ def main(argv: list[str] | None = None) -> int:
             if not auth.delete_user(conn, args.username):
                 return _fail(f"No existe el usuario {args.username!r}")
             print(f"Usuario {args.username} eliminado")
+        elif args.command == "set-admin":
+            if not auth.set_admin(conn, args.username, not args.revoke):
+                return _fail(f"No existe el usuario {args.username!r}")
+            role = "usuario" if args.revoke else "administrador"
+            print(f"{args.username} ahora es {role}")
         elif args.command == "create-api-key":
             try:
                 key = auth.create_api_key(conn, args.name, args.collections)

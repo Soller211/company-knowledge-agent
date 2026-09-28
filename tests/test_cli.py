@@ -110,3 +110,17 @@ def test_reindex_with_missing_docs_dir_keeps_index(env, db_url, monkeypatch):
     assert cli.main(["ingest", "--reindex"]) == 1
     with connect(db_url) as conn:
         assert conn.execute("SELECT count(*) FROM chunks").fetchone()[0] == 1
+
+
+def test_create_admin_and_toggle_role(env, db_url, monkeypatch):
+    type_passwords(monkeypatch, "contraseña-laura", "contraseña-laura")
+    assert cli.main(["create-user", "laura", "--admin"]) == 0
+    with connect(db_url) as conn:
+        assert auth.get_user(conn, "laura")["is_admin"] is True
+    assert cli.main(["set-admin", "laura", "--no"]) == 0
+    with connect(db_url) as conn:
+        assert auth.get_user(conn, "laura")["is_admin"] is False
+    assert cli.main(["set-admin", "laura"]) == 0
+    with connect(db_url) as conn:
+        assert auth.get_user(conn, "laura")["is_admin"] is True
+    assert cli.main(["set-admin", "nadie"]) == 1

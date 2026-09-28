@@ -21,6 +21,16 @@ MAX_TRACKED_USERNAMES = 10_000
 class Principal:
     name: str
     collections: tuple[str, ...]
+    is_admin: bool = False
+
+
+def can_manage(principal: Principal, collection: str) -> bool:
+    """Whether the principal may upload or delete documents in `collection`.
+
+    Today only admins can. To let area leaders manage their own collections, add a
+    users.editor_collections column and check it here: every admin check goes through this.
+    """
+    return principal.is_admin
 
 
 class AccountLocked(Exception):
@@ -115,13 +125,17 @@ class LoginThrottle:
 
 
 def create_user(
-    conn: psycopg.Connection, username: str, password: str, collections: Iterable[str]
+    conn: psycopg.Connection,
+    username: str,
+    password: str,
+    collections: Iterable[str],
+    is_admin: bool = False,
 ) -> None:
     username = _normalize_username(username)
     cur = conn.execute(
-        "INSERT INTO users (username, password_hash, collections) VALUES (%s, %s, %s) "
-        "ON CONFLICT (username) DO NOTHING",
-        (username, hash_password(password), list(normalize_collections(collections))),
+        "INSERT INTO users (username, password_hash, collections, is_admin) "
+        "VALUES (%s, %s, %s, %s) ON CONFLICT (username) DO NOTHING",
+        (username, hash_password(password), list(normalize_collections(collections)), is_admin),
     )
     if cur.rowcount == 0:
         raise ValueError(f"El usuario {username!r} ya existe")
@@ -148,6 +162,37 @@ def delete_user(conn: psycopg.Connection, username: str) -> bool:
     return cur.rowcount == 1
 
 
+def set_admin(conn: psycopg.Connection, username: str, is_admin: bool) -> bool:
+    cur = conn.execute(
+        "UPDATE users SET is_admin = %s WHERE username = %s",
+        (is_admin, _normalize_username(username)),
+    )
+    return cur.rowcount == 1
+
+
+def _user_dict(row) -> dict:
+    return {
+        "username": row[0],
+        "collections": list(normalize_collections(row[1])),
+        "is_admin": row[2],
+    }
+
+
+def get_user(conn: psycopg.Connection, username: str) -> dict | None:
+    row = conn.execute(
+        "SELECT username, collections, is_admin FROM users WHERE username = %s",
+        (_normalize_username(username),),
+    ).fetchone()
+    return _user_dict(row) if row else None
+
+
+def list_users(conn: psycopg.Connection) -> list[dict]:
+    rows = conn.execute(
+        "SELECT username, collections, is_admin FROM users ORDER BY username"
+    ).fetchall()
+    return [_user_dict(row) for row in rows]
+
+
 def authenticate(
     conn: psycopg.Connection, username: str, password: str, throttle: LoginThrottle
 ) -> Principal | None:
@@ -155,14 +200,15 @@ def authenticate(
     if throttle.is_locked(username):
         raise AccountLocked(username)
     row = conn.execute(
-        "SELECT password_hash, collections FROM users WHERE username = %s", (username,)
+        "SELECT password_hash, collections, is_admin FROM users WHERE username = %s",
+        (username,),
     ).fetchone()
     password_ok = verify_password(password, row[0] if row else _DUMMY_HASH)
     if row is None or not password_ok:
         throttle.record_failure(username)
         return None
     throttle.record_success(username)
-    return Principal(username, normalize_collections(row[1]))
+    return Principal(username, normalize_collections(row[1]), row[2])
 
 
 def _hash_key(raw: str) -> str:
@@ -223,8 +269,9 @@ def get_principal(request, conn: psycopg.Connection) -> Principal | None:
         return None
     # Read on every request so permission and password changes apply immediately.
     row = conn.execute(
-        "SELECT collections, password_hash FROM users WHERE username = %s", (username,)
+        "SELECT collections, password_hash, is_admin FROM users WHERE username = %s",
+        (username,),
     ).fetchone()
     if row is None or request.session.get("epoch") != _session_epoch(row[1]):
         return None
-    return Principal(username, normalize_collections(row[0]))
+    return Principal(username, normalize_collections(row[0]), row[2])
