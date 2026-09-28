@@ -155,3 +155,31 @@ def test_recreated_user_does_not_inherit_old_sessions(conn):
     auth.delete_user(conn, "ana")
     auth.create_user(conn, "ana", "otra-contraseña", ["finanzas"])
     assert auth.get_principal(request, conn) is None
+
+
+def test_old_failures_do_not_count_towards_lockout():
+    now = [0.0]
+    throttle = auth.LoginThrottle(max_failures=3, lockout_seconds=60, clock=lambda: now[0])
+    throttle.record_failure("ana")
+    throttle.record_failure("ana")
+    now[0] = 1000.0
+    throttle.record_failure("ana")
+    assert not throttle.is_locked("ana")
+
+
+def test_throttle_forgets_stale_usernames():
+    now = [0.0]
+    throttle = auth.LoginThrottle(lockout_seconds=60, clock=lambda: now[0], max_tracked=10)
+    for i in range(10):
+        throttle.record_failure(f"random-{i}")
+    now[0] = 1000.0
+    throttle.record_failure("ana")
+    assert throttle.tracked() == 1
+
+
+def test_revoked_api_key_name_can_be_reused(conn):
+    old = auth.create_api_key(conn, "intranet", [])
+    auth.revoke_api_key(conn, "intranet")
+    new = auth.create_api_key(conn, "intranet", ["ventas"])
+    assert auth.principal_from_api_key(conn, old) is None
+    assert auth.principal_from_api_key(conn, new).collections == ("general", "ventas")

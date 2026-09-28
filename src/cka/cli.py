@@ -84,6 +84,8 @@ def _ingest(settings: Settings, reindex: bool) -> int:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    # The first run downloads the embedding model: hide one log line per HTTP request.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     settings = Settings.from_env()
     if args.command == "ingest":
         return _ingest(settings, args.reindex)

@@ -2,6 +2,7 @@ import os
 
 import pytest
 
+from cka.agent import search_chunks
 from cka.ingest import ingest
 from conftest import FakeEmbedder, make_pdf, write_doc
 
@@ -157,3 +158,15 @@ def test_unreadable_subfolder_keeps_its_documents(conn, embedder, tmp_path):
     assert "rrhh" in report.errors
     assert report.removed == []
     assert {r[0] for r in chunk_rows(conn)} == {"general/b.md", "rrhh/a.md"}
+
+
+def test_file_moved_into_restricted_collection_disappears_from_general(conn, embedder, tmp_path):
+    path = write_doc(tmp_path, "general/nominas.md", "Tabla salarial confidencial.")
+    write_doc(tmp_path, "general/otro.md", "Horario de oficina.")
+    ingest(conn, tmp_path, embedder)
+    (tmp_path / "rrhh").mkdir()
+    path.rename(tmp_path / "rrhh" / "nominas.md")
+    ingest(conn, tmp_path, embedder)
+    vector = embedder.embed(["Tabla salarial confidencial."])[0]
+    visible = {h.path for h in search_chunks(conn, vector, ["general"], 10, -1.0)}
+    assert visible == {"general/otro.md"}

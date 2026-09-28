@@ -31,8 +31,9 @@ RETRY_REMINDER = (
     "with [n] using only the fragment numbers shown in the context."
 )
 
-# Matches [1] and also [1, 2] (some local models group citations).
-CITATION_RE = re.compile(r"\[(\d+(?:\s*,\s*\d+)*)\]")
+# Matches [1] and also [1, 2] (some local models group citations). At most two digits, so
+# bracketed years like [2015] are left alone.
+CITATION_RE = re.compile(r"\[(\d{1,2}(?:\s*,\s*\d{1,2})*)\]")
 
 
 class LLMUnavailable(RuntimeError):
@@ -130,7 +131,7 @@ def build_graph(
         return {"answer": reply.text}
 
     def validar(state: State) -> State:
-        if NOT_FOUND_TOKEN in state["answer"]:
+        if state["answer"].strip().rstrip(".").strip() == NOT_FOUND_TOKEN:
             return {"answer": settings.not_found_message, "citations": [], "verified": True}
         text, citations = validate_citations(state["answer"], state["hits"])
         return {"answer": text.strip(), "citations": citations, "verified": bool(citations)}

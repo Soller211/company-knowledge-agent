@@ -14,6 +14,7 @@ GENERAL = "general"
 MAX_FAILURES = 5
 LOCKOUT_SECONDS = 15 * 60
 API_KEY_PREFIX = "cka_"
+MAX_TRACKED_USERNAMES = 10_000
 
 
 @dataclass(frozen=True)
@@ -59,20 +60,28 @@ _DUMMY_HASH = hash_password("dummy-password-for-timing")
 
 
 class LoginThrottle:
-    """Lock a username for a while after too many failed logins.
+    """Lock a username for a while after too many failed logins within the lockout window.
 
     ponytail: in-memory, per process. Counters reset on restart and are not shared between
     replicas; move them to Postgres if the API runs as several replicas.
     """
 
     def __init__(
-        self, max_failures=MAX_FAILURES, lockout_seconds=LOCKOUT_SECONDS, clock=time.monotonic
+        self,
+        max_failures=MAX_FAILURES,
+        lockout_seconds=LOCKOUT_SECONDS,
+        clock=time.monotonic,
+        max_tracked=MAX_TRACKED_USERNAMES,
     ):
         self._max_failures = max_failures
         self._lockout_seconds = lockout_seconds
         self._clock = clock
-        self._failures: dict[str, int] = {}
+        self._max_tracked = max_tracked
+        self._failures: dict[str, tuple[int, float]] = {}  # username -> (count, last failure)
         self._locked_until: dict[str, float] = {}
+
+    def tracked(self) -> int:
+        return len(self._failures) + len(self._locked_until)
 
     def is_locked(self, username: str) -> bool:
         until = self._locked_until.get(username)
@@ -85,10 +94,21 @@ class LoginThrottle:
         return True
 
     def record_failure(self, username: str) -> None:
-        count = self._failures.get(username, 0) + 1
-        self._failures[username] = count
-        if count >= self._max_failures:
-            self._locked_until[username] = self._clock() + self._lockout_seconds
+        now = self._clock()
+        if len(self._failures) >= self._max_tracked:
+            self._forget_stale(now)
+        count, last = self._failures.get(username, (0, now))
+        if now - last > self._lockout_seconds:
+            count = 0
+        self._failures[username] = (count + 1, now)
+        if count + 1 >= self._max_failures:
+            self._locked_until[username] = now + self._lockout_seconds
+
+    def _forget_stale(self, now: float) -> None:
+        # Failed logins with random usernames must not grow memory forever.
+        cutoff = now - self._lockout_seconds
+        self._failures = {u: v for u, v in self._failures.items() if v[1] > cutoff}
+        self._locked_until = {u: t for u, t in self._locked_until.items() if t > now}
 
     def record_success(self, username: str) -> None:
         self._failures.pop(username, None)
@@ -151,6 +171,8 @@ def _hash_key(raw: str) -> str:
 
 def create_api_key(conn: psycopg.Connection, name: str, collections: Iterable[str]) -> str:
     raw = API_KEY_PREFIX + secrets.token_urlsafe(32)
+    # A revoked key frees its name, so keys can be rotated under the same name.
+    conn.execute("DELETE FROM api_keys WHERE name = %s AND revoked_at IS NOT NULL", (name,))
     cur = conn.execute(
         "INSERT INTO api_keys (name, key_hash, collections) VALUES (%s, %s, %s) "
         "ON CONFLICT (name) DO NOTHING",

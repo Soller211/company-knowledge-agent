@@ -35,7 +35,7 @@ class LocalEmbedder:
         self.dim = self.embed(["dimension probe"]).shape[1]
 
     def embed(self, texts: list[str]) -> np.ndarray:
-        return _normalize(self._model.encode(texts, batch_size=16))
+        return _normalize(self._model.encode(texts, batch_size=16, show_progress_bar=False))
 
 
 class RemoteEmbedder:

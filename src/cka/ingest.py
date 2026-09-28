@@ -57,10 +57,18 @@ def read_file(path: Path) -> list[Page]:
             blocks += [" | ".join(cell.text for cell in row.cells) for row in table.rows]
         pages = [Page(None, "\n\n".join(blocks))]
     else:
-        pages = [Page(None, path.read_text(encoding="utf-8", errors="replace"))]
+        pages = [Page(None, _read_text(path))]
     # Postgres text columns reject NUL bytes, which some PDFs produce.
     cleaned = [Page(p.number, p.text.replace("\x00", "")) for p in pages]
     return [p for p in cleaned if p.text.strip()]
+
+
+def _read_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        # Plain-text files saved on Windows are often cp1252 ("Latin-1" with accents).
+        return path.read_text(encoding="cp1252", errors="replace")
 
 
 def chunk_pages(pages: list[Page]) -> list[Chunk]:

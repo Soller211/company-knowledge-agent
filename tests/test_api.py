@@ -164,3 +164,14 @@ def test_password_change_logs_out_open_sessions(seeded, embedder):
     login(client)
     auth.set_password(seeded, "ana", "clave-nueva-123")
     assert client.get("/me").status_code == 401
+
+
+def test_uppercase_folder_and_uppercase_user_collection_match(conn, embedder, tmp_path):
+    write_doc(tmp_path, "RRHH/vacaciones.md", "Los empleados tienen 22 dias de vacaciones al año.")
+    ingest(conn, tmp_path, embedder)
+    auth.create_user(conn, "luis", "contraseña-luis", ["RRHH"])
+    llm = ScriptedLLM("Hay 22 dias [1].")
+    client = client_for(embedder, llm)
+    login(client, "luis", "contraseña-luis")
+    body = ask(client).json()
+    assert body["citations"][0]["file"] == "RRHH/vacaciones.md"

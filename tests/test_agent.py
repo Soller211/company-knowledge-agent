@@ -105,3 +105,17 @@ def test_unverified_after_second_failure(conn, embedder, docs):
 def test_llm_failure_raises_llm_unavailable(conn, embedder, docs):
     with pytest.raises(agent.LLMUnavailable):
         run(conn, embedder, BrokenLLM())
+
+
+def test_answer_mentioning_not_found_is_kept(conn, embedder, docs):
+    llm = ScriptedLLM("El portal devuelve el error NOT_FOUND si faltan dias [1].")
+    result = run(conn, embedder, llm)
+    assert result["verified"] is True
+    assert "NOT_FOUND" in result["answer"]
+
+
+def test_bracketed_years_are_not_treated_as_citations():
+    hits = [agent.Hit("a.md", None, "texto a", 0.9)]
+    text, citations = agent.validate_citations("Ley 39 [2015] [1].", hits)
+    assert text == "Ley 39 [2015] [1]."
+    assert [c["n"] for c in citations] == [1]

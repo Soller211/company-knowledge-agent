@@ -96,3 +96,9 @@ def test_should_index(rel, expected):
 )
 def test_collection_for(rel, expected):
     assert collection_for(PurePosixPath(rel)) == expected
+
+
+def test_read_windows_encoded_text_file(tmp_path):
+    path = tmp_path / "notas.txt"
+    path.write_bytes("Política de vacaciones: 23 días".encode("cp1252"))
+    assert read_file(path) == [Page(None, "Política de vacaciones: 23 días")]
