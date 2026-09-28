@@ -1,0 +1,21 @@
+# Question -> document that should appear in the search results.
+# expected: null means "the documents do NOT contain the answer"; used to calibrate MIN_SCORE.
+# Replace these with real questions from your company.
+- question: ¿Cuántos días de vacaciones tengo al año?
+  expected: rrhh/vacaciones.md
+- question: ¿Con cuánta antelación tengo que pedir las vacaciones?
+  expected: rrhh/vacaciones.md
+- question: ¿Cuántos días puedo teletrabajar?
+  expected: rrhh/teletrabajo.md
+- question: ¿Cuál es el límite de hotel en un viaje al extranjero?
+  expected: finanzas/gastos-de-viaje.md
+- question: ¿A qué hora abre la oficina?
+  expected: general/bienvenida.md
+- question: ¿Cómo pido un portátil nuevo?
+  expected: general/herramientas.md
+- question: ¿Cuál es la clave del wifi de visitas?
+  expected: general/herramientas.md
+- question: ¿Quién ganó el mundial de fútbol de 2010?
+  expected: null
+- question: ¿Cuál es el precio de las acciones de la empresa?
+  expected: null
