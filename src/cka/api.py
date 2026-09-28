@@ -1,6 +1,7 @@
 """Web API: login, questions and the chat page."""
 
 import logging
+import threading
 import time
 from pathlib import Path
 
@@ -11,8 +12,10 @@ from pydantic import BaseModel, Field, field_validator
 from starlette.middleware.sessions import SessionMiddleware
 
 from cka import agent, auth, db
+from cka.admin_api import build_admin_router
 from cka.config import Settings
 from cka.embeddings import make_embedder
+from cka.ingest import mark_interrupted
 from cka.llm import make_llm
 
 log = logging.getLogger("cka.api")
@@ -46,9 +49,15 @@ def create_app(settings: Settings | None = None, *, llm=None, embedder=None) -> 
     embedder = embedder or make_embedder(settings)
     llm = llm or make_llm(settings)
     db.init_schema(settings.database_url, embedder.dim, embedder.model_name)
+    with db.connect(settings.database_url) as conn:
+        interrupted = mark_interrupted(conn)
+    if interrupted:
+        log.warning("%d documentos quedaron a medias por un reinicio", interrupted)
+    ingest_lock = threading.Lock()
     throttle = auth.LoginThrottle()
 
     app = FastAPI(title="Company Knowledge Agent")
+    app.state.ingest_lock = ingest_lock
     app.add_middleware(
         SessionMiddleware,
         secret_key=settings.secret_key,
@@ -112,7 +121,11 @@ def create_app(settings: Settings | None = None, *, llm=None, embedder=None) -> 
 
     @app.get("/me")
     def me(principal: auth.Principal = Depends(require_principal)):
-        return {"user": principal.name, "collections": list(principal.collections)}
+        return {
+            "user": principal.name,
+            "collections": list(principal.collections),
+            "is_admin": principal.is_admin,
+        }
 
     @app.post("/ask")
     def ask(
@@ -146,4 +159,7 @@ def create_app(settings: Settings | None = None, *, llm=None, embedder=None) -> 
         )
         return result
 
+    app.include_router(
+        build_admin_router(settings, embedder, get_conn, require_principal, ingest_lock)
+    )
     return app

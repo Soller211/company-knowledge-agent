@@ -24,6 +24,7 @@ class Settings:
     min_score: float = 0.35
     not_found_message: str = "No encontré esa información en los documentos."
     cookie_secure: bool = False
+    max_upload_mb: int = 50
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] = os.environ) -> "Settings":
@@ -49,4 +50,5 @@ class Settings:
             min_score=float(env.get("MIN_SCORE", cls.min_score)),
             not_found_message=env.get("NOT_FOUND_MESSAGE", cls.not_found_message),
             cookie_secure=env.get("COOKIE_SECURE", "false").strip().lower() in ("1", "true", "yes"),
+            max_upload_mb=int(env.get("MAX_UPLOAD_MB", cls.max_upload_mb)),
         )

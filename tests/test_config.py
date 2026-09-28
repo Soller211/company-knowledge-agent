@@ -29,6 +29,7 @@ def test_defaults():
     assert s.llm_timeout == 60.0
     assert s.not_found_message == "No encontré esa información en los documentos."
     assert s.cookie_secure is False
+    assert s.max_upload_mb == 50
 
 
 def test_parses_values():
@@ -43,6 +44,7 @@ def test_parses_values():
             "EMBEDDING_BASE_URL": "http://embed:8000/v1",
             "COOKIE_SECURE": "true",
             "DOCS_DIR": "/data/docs",
+            "MAX_UPLOAD_MB": "5",
         }
     )
     assert s.llm_provider == "anthropic"
@@ -53,3 +55,4 @@ def test_parses_values():
     assert s.embedding_base_url == "http://embed:8000/v1"
     assert s.cookie_secure is True
     assert s.docs_dir == "/data/docs"
+    assert s.max_upload_mb == 5
