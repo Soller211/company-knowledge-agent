@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.env
+# Real company documents must never be committed. Keep them outside the repo
+# (DOCS_HOST_DIR) or in data/, which is ignored.
+/data/
