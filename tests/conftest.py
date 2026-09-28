@@ -6,6 +6,7 @@ from dataclasses import replace
 import numpy as np
 import psycopg
 import pytest
+from langchain_core.messages import AIMessage
 
 from cka import db
 from cka.config import Settings
@@ -103,3 +104,20 @@ def write_doc(root, rel, text):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
     return path
+
+
+class ScriptedLLM:
+    """Fake chat model: returns the given replies in order and records every prompt."""
+
+    def __init__(self, *replies):
+        self.replies = list(replies)
+        self.calls = []
+
+    def invoke(self, messages):
+        self.calls.append("\n".join(m.content for m in messages))
+        return AIMessage(content=self.replies.pop(0))
+
+
+class BrokenLLM:
+    def invoke(self, messages):
+        raise ConnectionError("model server down")
