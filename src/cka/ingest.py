@@ -20,6 +20,13 @@ GENERAL = "general"
 
 log = logging.getLogger("cka.ingest")
 
+UNCHANGED = "unchanged"
+READY = "ready"
+EMPTY = "empty"
+ERROR = "error"
+PROCESSING = "processing"
+INTERRUPTED = "interrumpido (la API se reinició)"
+
 
 @dataclass(frozen=True)
 class Page:
@@ -123,26 +130,18 @@ def ingest(conn: psycopg.Connection, docs_dir: Path, embedder: Embedder) -> Inge
             "(¿carpeta sin montar o sin sincronizar?)."
         )
     seen: set[str] = set()
-    for path, rel in sorted(files):
+    for _path, rel in sorted(files):
         key = str(rel)
         seen.add(key)
-        try:
-            digest = hashlib.sha256(path.read_bytes()).hexdigest()
-            if known.get(key) == digest:
-                report.unchanged += 1
-                continue
-            chunks = chunk_pages(read_file(path))
-            vectors = embedder.embed([c.content for c in chunks]) if chunks else []
-            _store(conn, key, collection_for(rel), digest, chunks, vectors)
-        except Exception as exc:  # noqa: BLE001 - one broken file must not stop the run
-            log.warning("No se pudo cargar %s: %s", key, exc)
-            report.errors[key] = str(exc)
-            continue
-        if chunks:
+        status, error = ingest_file(conn, docs_dir, rel, embedder, known.get(key))
+        if status == UNCHANGED:
+            report.unchanged += 1
+        elif status == READY:
             report.loaded.append(key)
-        else:
-            log.warning("%s no tiene texto extraíble (¿PDF escaneado?)", key)
+        elif status == EMPTY:
             report.empty.append(key)
+        else:
+            report.errors[key] = error
     if walk_errors:
         for err in walk_errors:
             folder = Path(err.filename).relative_to(docs_dir).as_posix()
@@ -155,14 +154,73 @@ def ingest(conn: psycopg.Connection, docs_dir: Path, embedder: Embedder) -> Inge
     return report
 
 
+def ingest_file(
+    conn: psycopg.Connection,
+    docs_dir: Path,
+    rel: PurePosixPath,
+    embedder: Embedder,
+    known_digest: str | None = None,
+) -> tuple[str, str | None]:
+    """Index one file and record its status. Returns (status, error message)."""
+    key = str(rel)
+    collection = collection_for(rel)
+    path = Path(docs_dir) / rel
+    try:
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if digest == known_digest:
+            return UNCHANGED, None
+        chunks = chunk_pages(read_file(path))
+        vectors = embedder.embed([c.content for c in chunks]) if chunks else []
+        _store(conn, key, collection, digest, chunks, vectors)
+    except Exception as exc:  # noqa: BLE001 - one broken file must not stop the run
+        log.warning("No se pudo cargar %s: %s", key, exc)
+        _mark_error(conn, key, collection, str(exc))
+        return ERROR, str(exc)
+    if not chunks:
+        log.warning("%s no tiene texto extraíble (¿PDF escaneado?)", key)
+        return EMPTY, None
+    return READY, None
+
+
+def mark_processing(conn: psycopg.Connection, rel: PurePosixPath) -> None:
+    conn.execute(
+        "INSERT INTO documents (path, collection, sha256, status) VALUES (%s, %s, NULL, %s) "
+        "ON CONFLICT (path) DO UPDATE SET collection = EXCLUDED.collection, sha256 = NULL, "
+        "status = EXCLUDED.status, error = NULL, ingested_at = now()",
+        (str(rel), collection_for(rel), PROCESSING),
+    )
+
+
+def mark_interrupted(conn: psycopg.Connection) -> int:
+    """Uploads still 'processing' when the API starts were cut off by a restart."""
+    cur = conn.execute(
+        "UPDATE documents SET status = %s, error = %s WHERE status = %s",
+        (ERROR, INTERRUPTED, PROCESSING),
+    )
+    return cur.rowcount
+
+
+def _mark_error(conn, path, collection, message) -> None:
+    # sha256 NULL so the next run retries it; existing chunks (previous version) are kept.
+    conn.execute(
+        "INSERT INTO documents (path, collection, sha256, status, error) "
+        "VALUES (%s, %s, NULL, %s, %s) "
+        "ON CONFLICT (path) DO UPDATE SET collection = EXCLUDED.collection, sha256 = NULL, "
+        "status = EXCLUDED.status, error = EXCLUDED.error, ingested_at = now()",
+        (path, collection, ERROR, message),
+    )
+
+
 def _store(conn, path, collection, digest, chunks, vectors) -> None:
     # One transaction per file: a crash never leaves a half-indexed document.
     with conn.transaction():
         conn.execute(
-            "INSERT INTO documents (path, collection, sha256) VALUES (%s, %s, %s) "
+            "INSERT INTO documents (path, collection, sha256, status, error) "
+            "VALUES (%s, %s, %s, %s, NULL) "
             "ON CONFLICT (path) DO UPDATE SET collection = EXCLUDED.collection, "
-            "sha256 = EXCLUDED.sha256, ingested_at = now()",
-            (path, collection, digest),
+            "sha256 = EXCLUDED.sha256, status = EXCLUDED.status, error = NULL, "
+            "ingested_at = now()",
+            (path, collection, digest, READY if chunks else EMPTY),
         )
         conn.execute("DELETE FROM chunks WHERE path = %s", (path,))
         if chunks:

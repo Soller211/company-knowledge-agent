@@ -1,3 +1,4 @@
+import psycopg
 import pytest
 
 from cka import db
@@ -64,3 +65,23 @@ def test_vector_roundtrip(conn):
         "SELECT 1 - (embedding <=> %s::vector) FROM chunks", (str(vector),)
     ).fetchone()[0]
     assert score == pytest.approx(1.0)
+
+
+def test_init_schema_upgrades_v01_tables(db_url):
+    with psycopg.connect(db_url, autocommit=True) as c:
+        c.execute("CREATE EXTENSION IF NOT EXISTS vector")
+        c.execute(
+            "CREATE TABLE users (username text PRIMARY KEY, password_hash text NOT NULL, "
+            "collections text[] NOT NULL DEFAULT '{}')"
+        )
+        c.execute(
+            "CREATE TABLE documents (path text PRIMARY KEY, collection text NOT NULL, "
+            "sha256 text NOT NULL, ingested_at timestamptz NOT NULL DEFAULT now())"
+        )
+        c.execute("INSERT INTO users (username, password_hash) VALUES ('ana', 'x')")
+        c.execute("INSERT INTO documents (path, collection, sha256) VALUES ('a.md', 'general', 'h')")
+    db.init_schema(db_url, 64, "model-a")
+    with db.connect(db_url) as conn:
+        assert conn.execute("SELECT status, error FROM documents").fetchone() == ("ready", None)
+        assert conn.execute("SELECT is_admin FROM users").fetchone() == (False,)
+        conn.execute("INSERT INTO documents (path, collection, sha256) VALUES ('b.md', 'general', NULL)")

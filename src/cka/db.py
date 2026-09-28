@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS api_keys (
   collections text[] NOT NULL DEFAULT '{}',
   revoked_at  timestamptz
 );
+ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin boolean NOT NULL DEFAULT false;
 """
 
 # "{dim}" is replaced with str.replace, not str.format: the SQL above contains literal braces.
@@ -37,6 +38,9 @@ CREATE TABLE IF NOT EXISTS chunks (
 );
 CREATE INDEX IF NOT EXISTS chunks_embedding_idx ON chunks USING hnsw (embedding vector_cosine_ops);
 CREATE INDEX IF NOT EXISTS chunks_collection_idx ON chunks (collection);
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'ready';
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS error text;
+ALTER TABLE documents ALTER COLUMN sha256 DROP NOT NULL;
 """
 
 

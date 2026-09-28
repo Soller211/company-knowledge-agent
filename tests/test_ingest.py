@@ -1,9 +1,10 @@
 import os
+from pathlib import PurePosixPath
 
 import pytest
 
 from cka.agent import search_chunks
-from cka.ingest import ingest
+from cka.ingest import INTERRUPTED, ingest, ingest_file, mark_interrupted, mark_processing
 from conftest import FakeEmbedder, make_pdf, write_doc
 
 
@@ -170,3 +171,62 @@ def test_file_moved_into_restricted_collection_disappears_from_general(conn, emb
     vector = embedder.embed(["Tabla salarial confidencial."])[0]
     visible = {h.path for h in search_chunks(conn, vector, ["general"], 10, -1.0)}
     assert visible == {"general/otro.md"}
+
+
+def doc_status(conn):
+    return {
+        r[0]: (r[1], r[2])
+        for r in conn.execute("SELECT path, status, error FROM documents").fetchall()
+    }
+
+
+def test_statuses_are_recorded(conn, embedder, tmp_path):
+    write_doc(tmp_path, "ok.md", "contenido")
+    make_pdf(tmp_path / "escaneado.pdf", [""])
+    (tmp_path / "roto.pdf").write_bytes(b"no es un pdf")
+    ingest(conn, tmp_path, embedder)
+    statuses = doc_status(conn)
+    assert statuses["ok.md"] == ("ready", None)
+    assert statuses["escaneado.pdf"] == ("empty", None)
+    assert statuses["roto.pdf"][0] == "error"
+    assert statuses["roto.pdf"][1]
+
+
+def test_error_is_cleared_when_the_file_is_fixed(conn, embedder, tmp_path):
+    (tmp_path / "doc.pdf").write_bytes(b"no es un pdf")
+    write_doc(tmp_path, "otro.md", "contenido")
+    ingest(conn, tmp_path, embedder)
+    make_pdf(tmp_path / "doc.pdf", ["ahora si tiene texto"])
+    ingest(conn, tmp_path, embedder)
+    assert doc_status(conn)["doc.pdf"] == ("ready", None)
+
+
+def test_failed_update_keeps_old_chunks_and_shows_error(conn, tmp_path):
+    class FailingEmbedder(FakeEmbedder):
+        def embed(self, texts):
+            if any("ROMPER" in t for t in texts):
+                raise RuntimeError("embedding server down")
+            return super().embed(texts)
+
+    embedder = FailingEmbedder()
+    path = write_doc(tmp_path, "a.md", "version uno")
+    ingest(conn, tmp_path, embedder)
+    path.write_text("version dos ROMPER", encoding="utf-8")
+    ingest(conn, tmp_path, embedder)
+    assert doc_status(conn)["a.md"] == ("error", "embedding server down")
+    assert [r[3] for r in chunk_rows(conn)] == ["version uno"]
+
+
+def test_ingest_file_indexes_one_file(conn, embedder, tmp_path):
+    write_doc(tmp_path, "rrhh/a.md", "contenido de rrhh")
+    write_doc(tmp_path, "rrhh/b.md", "no se toca")
+    assert ingest_file(conn, tmp_path, PurePosixPath("rrhh/a.md"), embedder) == ("ready", None)
+    assert [(r[0], r[1]) for r in chunk_rows(conn)] == [("rrhh/a.md", "rrhh")]
+
+
+def test_mark_processing_then_interrupted(conn, tmp_path):
+    mark_processing(conn, PurePosixPath("rrhh/nuevo.pdf"))
+    row = conn.execute("SELECT collection, status, sha256 FROM documents").fetchone()
+    assert row == ("rrhh", "processing", None)
+    assert mark_interrupted(conn) == 1
+    assert doc_status(conn)["rrhh/nuevo.pdf"] == ("error", INTERRUPTED)
