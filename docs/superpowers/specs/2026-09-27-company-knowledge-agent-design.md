@@ -326,3 +326,15 @@ company-knowledge-agent/
 - Búsqueda híbrida con `tsvector` de Postgres.
 - Descarga del documento original con comprobación de permisos.
 - Bot de Teams sobre `/ask`.
+
+## 13. Añadidos durante la planificación
+
+- CLI: `set-collections` y `delete-user` (necesarios para gestionar permisos sin tocar SQL).
+- API: `GET /me` (el chat lo usa para saber si hay sesión).
+- Config: `COOKIE_SECURE` (cookie `Secure` cuando se sirve por HTTPS).
+- Un archivo vacío o escaneado se registra en `documents` sin fragmentos, para no
+  reprocesarlo en cada carga.
+- Si `DOCS_DIR` no existe, `ingest` falla en vez de vaciar el índice.
+- Se ignoran archivos de bloqueo de Office (`~$*`) y archivos/carpetas ocultos.
+- Word: también se indexa el texto de las tablas.
+- Idioma: código y README en inglés; `README.es.md` y mensajes al usuario final en español.
