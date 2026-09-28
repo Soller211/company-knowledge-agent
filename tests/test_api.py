@@ -175,3 +175,19 @@ def test_uppercase_folder_and_uppercase_user_collection_match(conn, embedder, tm
     login(client, "luis", "contraseña-luis")
     body = ask(client).json()
     assert body["citations"][0]["file"] == "RRHH/vacaciones.md"
+
+
+@pytest.mark.parametrize(
+    ("path", "marker"),
+    [
+        ("/", "Company Knowledge Agent"),
+        ("/documents", "Documentos"),
+        ("/users", "Usuarios"),
+        ("/static/app.css", "--accent"),
+        ("/static/app.js", "function startPage"),
+    ],
+)
+def test_pages_and_assets_are_served(seeded, embedder, path, marker):
+    response = client_for(embedder, ScriptedLLM()).get(path)
+    assert response.status_code == 200
+    assert marker in response.text

@@ -8,6 +8,7 @@ from pathlib import Path
 import psycopg
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -92,6 +93,14 @@ def create_app(settings: Settings | None = None, *, llm=None, embedder=None) -> 
     def index():
         return FileResponse(STATIC_DIR / "index.html")
 
+    @app.get("/documents", include_in_schema=False)
+    def documents_page():
+        return FileResponse(STATIC_DIR / "documents.html")
+
+    @app.get("/users", include_in_schema=False)
+    def users_page():
+        return FileResponse(STATIC_DIR / "users.html")
+
     @app.get("/health")
     def health():
         try:
@@ -162,4 +171,5 @@ def create_app(settings: Settings | None = None, *, llm=None, embedder=None) -> 
     app.include_router(
         build_admin_router(settings, embedder, get_conn, require_principal, ingest_lock)
     )
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     return app

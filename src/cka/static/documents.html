@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Documentos · Company Knowledge Agent</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="no-session">
+<button id="menu-toggle" class="menu-toggle" type="button" aria-label="Abrir menú"></button>
+<div class="layout">
+  <aside id="sidebar" class="sidebar"></aside>
+  <main class="main">
+    <header class="page-header">
+      <div><h1>Documentos</h1><p id="summary" class="muted"></p></div>
+      <button id="sync" type="button" class="secondary"></button>
+    </header>
+
+    <section class="dropzone">
+      <input type="file" id="file-input" multiple accept=".pdf,.docx,.md,.txt" hidden>
+      <button type="button" id="drop-target" class="drop-target">
+        <span><strong>Arrastra archivos aquí o haz clic para elegir</strong><small>PDF, Word (.docx), Markdown o TXT</small></span>
+      </button>
+      <label class="field">Colección <select id="collection"></select></label>
+    </section>
+    <p id="upload-status" class="muted" role="status"></p>
+
+    <div class="toolbar">
+      <div id="filters" class="chips" role="group" aria-label="Filtrar por colección"></div>
+      <label class="search"><span class="sr-only">Buscar archivo</span><input id="search" type="search" placeholder="Buscar archivo"></label>
+    </div>
+
+    <table class="table">
+      <thead><tr><th>Archivo</th><th>Colección</th><th>Estado</th><th>Actualizado</th><th><span class="sr-only">Acciones</span></th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <p id="empty" class="muted" hidden>Todavía no hay documentos. Sube el primero arriba.</p>
+  </main>
+</div>
+<script src="/static/app.js"></script>
+<script>
+const STATUS = {ready: "Listo", processing: "Procesando", empty: "Sin texto", error: "Error"};
+const COLLECTION_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+const NEW_COLLECTION = "__new__";
+let documents = [];
+let collections = [];
+let filter = "";
+let poll = null;
+
+const $ = (id) => document.getElementById(id);
+const baseName = (path) => path.split("/").pop();
+
+function setStatus(text) { $("upload-status").textContent = text; }
+
+async function load() {
+  const [docs, cols] = await Promise.all([api("/api/admin/documents"), api("/api/admin/collections")]);
+  if (!docs.ok) { location.replace("/"); return; }
+  documents = docs.data;
+  collections = cols.ok ? cols.data : collections;
+  renderCollections();
+  render();
+  clearTimeout(poll);
+  if (documents.some((d) => d.status === "processing")) poll = setTimeout(load, 3000);
+}
+
+function renderCollections() {
+  const select = $("collection");
+  const current = select.value;
+  select.replaceChildren(
+    ...collections.map((name) => new Option(name, name)),
+    new Option("Nueva colección…", NEW_COLLECTION),
+  );
+  if (collections.includes(current)) select.value = current;
+  const chips = $("filters");
+  chips.replaceChildren();
+  for (const name of ["", ...collections]) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "chip";
+    chip.textContent = name || "Todas";
+    chip.setAttribute("aria-pressed", String(filter === name));
+    chip.onclick = () => { filter = name; renderCollections(); render(); };
+    chips.append(chip);
+  }
+}
+
+function cell(text) {
+  const td = document.createElement("td");
+  td.textContent = text;
+  return td;
+}
+
+function row(doc) {
+  const tr = document.createElement("tr");
+  const name = cell(baseName(doc.path));
+  name.title = doc.path;
+  const status = document.createElement("td");
+  const badge = document.createElement("span");
+  badge.className = `status status-${doc.status}`;
+  badge.textContent = STATUS[doc.status] || doc.status;
+  if (doc.error) {
+    badge.title = doc.error;
+    const detail = document.createElement("span");
+    detail.className = "sr-only";
+    detail.textContent = `: ${doc.error}`;
+    badge.append(detail);
+  }
+  status.append(badge);
+  const actions = document.createElement("td");
+  actions.className = "actions";
+  if (doc.status !== "processing") {
+    const remove = iconButton("trash", `Borrar ${doc.path}`);
+    remove.onclick = () => removeDocument(doc);
+    actions.append(remove);
+  }
+  const updated = new Date(doc.updated_at).toLocaleString("es", {dateStyle: "short", timeStyle: "short"});
+  tr.append(name, cell(doc.collection), status, cell(updated), actions);
+  return tr;
+}
+
+function render() {
+  const query = $("search").value.trim().toLowerCase();
+  const visible = documents.filter(
+    (d) => (!filter || d.collection === filter) && d.path.toLowerCase().includes(query),
+  );
+  const count = new Set(documents.map((d) => d.collection)).size;
+  $("summary").textContent = `${documents.length} documentos · ${count} colecciones`;
+  $("rows").replaceChildren(...visible.map(row));
+  $("empty").hidden = documents.length > 0;
+}
+
+async function removeDocument(doc) {
+  if (!confirm(`¿Borrar ${doc.path}? Se quitará del índice y de la carpeta.`)) return;
+  const path = doc.path.split("/").map(encodeURIComponent).join("/");
+  const result = await api(`/api/admin/documents/${path}`, {method: "DELETE"});
+  if (!result.ok) alert(errorText(result.data, "No se pudo borrar el documento"));
+  load();
+}
+
+async function uploadFiles(files) {
+  if (!files.length) return;
+  const collection = $("collection").value;
+  if (!collection || collection === NEW_COLLECTION) { setStatus("Elige una colección."); return; }
+  const clashes = files.filter((f) => documents.some((d) => d.collection === collection && baseName(d.path) === f.name));
+  if (clashes.length && !confirm(`Ya existe en ${collection}: ${clashes.map((f) => f.name).join(", ")}. ¿Reemplazar?`)) return;
+  for (const file of files) {
+    setStatus(`Subiendo ${file.name}…`);
+    const form = new FormData();
+    form.append("file", file);
+    form.append("collection", collection);
+    const result = await api("/api/admin/documents", {method: "POST", form});
+    if (!result.ok) {
+      setStatus(`${file.name}: ${errorText(result.data, "no se pudo subir")}`);
+      await load();
+      return;
+    }
+  }
+  setStatus(files.length === 1 ? "Archivo subido. Procesando…" : `${files.length} archivos subidos. Procesando…`);
+  load();
+}
+
+$("collection").onchange = (event) => {
+  if (event.target.value !== NEW_COLLECTION) return;
+  const name = (prompt("Nombre de la nueva colección (minúsculas, números, - o _):") || "").trim().toLowerCase();
+  if (!COLLECTION_RE.test(name)) {
+    if (name) alert("Nombre no válido: usa minúsculas sin acentos, números, - o _.");
+    event.target.value = collections[0] || "";
+    return;
+  }
+  if (!collections.includes(name)) collections = [...collections, name].sort();
+  renderCollections();
+  event.target.value = name;
+};
+
+const dropTarget = $("drop-target");
+dropTarget.prepend(icon("upload"));
+dropTarget.onclick = () => $("file-input").click();
+$("file-input").onchange = (event) => { uploadFiles([...event.target.files]); event.target.value = ""; };
+dropTarget.addEventListener("dragover", (event) => { event.preventDefault(); dropTarget.classList.add("dragging"); });
+dropTarget.addEventListener("dragleave", () => dropTarget.classList.remove("dragging"));
+dropTarget.addEventListener("drop", (event) => {
+  event.preventDefault();
+  dropTarget.classList.remove("dragging");
+  uploadFiles([...event.dataTransfer.files]);
+});
+
+$("search").oninput = render;
+
+const syncButton = $("sync");
+syncButton.append(icon("sync"), "Sincronizar carpeta");
+syncButton.onclick = async () => {
+  syncButton.disabled = true;
+  const result = await api("/api/admin/sync", {method: "POST"});
+  setStatus(result.ok ? "Sincronizando la carpeta…" : errorText(result.data, "No se pudo sincronizar"));
+  syncButton.disabled = false;
+  setTimeout(load, 1500);
+};
+
+startPage({adminOnly: true}).then((me) => { if (me) load(); });
+</script>
+</body>
+</html>

@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Usuarios · Company Knowledge Agent</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="no-session">
+<button id="menu-toggle" class="menu-toggle" type="button" aria-label="Abrir menú"></button>
+<div class="layout">
+  <aside id="sidebar" class="sidebar"></aside>
+  <main class="main">
+    <header class="page-header">
+      <div><h1>Usuarios</h1><p id="summary" class="muted"></p></div>
+      <button id="new-user" type="button"></button>
+    </header>
+    <table class="table">
+      <thead><tr><th>Usuario</th><th>Colecciones</th><th>Rol</th><th><span class="sr-only">Acciones</span></th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </main>
+</div>
+
+<dialog id="user-dialog">
+  <form id="user-form">
+    <h2 id="user-title">Nuevo usuario</h2>
+    <label class="field" id="username-field">Usuario <input name="username" autocomplete="off" maxlength="64"></label>
+    <label class="field" id="password-field">Contraseña temporal <input name="password" type="text" autocomplete="off" minlength="8"></label>
+    <fieldset>
+      <legend>Colecciones que puede consultar</legend>
+      <div id="collection-options" class="checks"></div>
+      <button type="button" id="add-collection" class="link">+ nueva colección</button>
+    </fieldset>
+    <label class="check"><input type="checkbox" name="is_admin"><span>Administrador<small>Puede gestionar documentos y usuarios</small></span></label>
+    <p id="user-error" class="error" role="alert"></p>
+    <div class="dialog-actions">
+      <button type="button" class="secondary" data-close>Cancelar</button>
+      <button type="submit">Guardar</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="password-dialog">
+  <form id="password-form">
+    <h2>Restablecer contraseña</h2>
+    <p class="muted">Nueva contraseña temporal para <strong id="password-user"></strong>. Se cerrarán sus sesiones abiertas.</p>
+    <label class="field">Contraseña temporal <input name="password" type="text" autocomplete="off" minlength="8" required></label>
+    <p id="password-error" class="error" role="alert"></p>
+    <div class="dialog-actions">
+      <button type="button" class="secondary" data-close>Cancelar</button>
+      <button type="submit">Guardar</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="/static/app.js"></script>
+<script>
+const COLLECTION_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+const $ = (id) => document.getElementById(id);
+let me = null;
+let users = [];
+let collections = [];
+let editing = null;
+let resetting = null;
+
+async function load() {
+  const [u, c] = await Promise.all([api("/api/admin/users"), api("/api/admin/collections")]);
+  if (!u.ok) { location.replace("/"); return; }
+  users = u.data;
+  collections = c.ok ? c.data : collections;
+  render();
+}
+
+function render() {
+  $("summary").textContent = `${users.length} usuarios`;
+  $("rows").replaceChildren(...users.map((user) => {
+    const tr = document.createElement("tr");
+    const name = document.createElement("td");
+    name.textContent = user.username === me.user ? `${user.username} (tú)` : user.username;
+    const cols = document.createElement("td");
+    for (const collection of user.collections) {
+      const pill = document.createElement("span");
+      pill.className = "pill";
+      pill.textContent = collection;
+      cols.append(pill);
+    }
+    const role = document.createElement("td");
+    if (user.is_admin) {
+      const badge = document.createElement("span");
+      badge.className = "badge-admin";
+      badge.textContent = "Admin";
+      role.append(badge);
+    } else {
+      role.textContent = "Usuario";
+    }
+    const actions = document.createElement("td");
+    actions.className = "actions";
+    const edit = iconButton("edit", `Editar ${user.username}`);
+    edit.onclick = () => openUser(user);
+    const key = iconButton("key", `Restablecer contraseña de ${user.username}`);
+    key.onclick = () => openPassword(user);
+    actions.append(edit, key);
+    if (user.username !== me.user) {
+      const remove = iconButton("trash", `Borrar ${user.username}`);
+      remove.onclick = () => removeUser(user);
+      actions.append(remove);
+    }
+    tr.append(name, cols, role, actions);
+    return tr;
+  }));
+}
+
+function renderCollectionOptions(selected) {
+  const box = $("collection-options");
+  box.replaceChildren();
+  const names = [...new Set([...collections, ...selected, "general"])].sort();
+  for (const name of names) {
+    const label = document.createElement("label");
+    label.className = "check";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.name = "collection";
+    input.value = name;
+    input.checked = name === "general" || selected.includes(name);
+    input.disabled = name === "general";
+    label.append(input, name);
+    box.append(label);
+  }
+}
+
+function openUser(user) {
+  editing = user;
+  const form = $("user-form");
+  form.reset();
+  $("user-error").textContent = "";
+  $("user-title").textContent = user ? `Editar usuario: ${user.username}` : "Nuevo usuario";
+  $("username-field").hidden = Boolean(user);
+  $("password-field").hidden = Boolean(user);
+  form.username.required = !user;
+  form.password.required = !user;
+  renderCollectionOptions(user ? user.collections : []);
+  form.is_admin.checked = Boolean(user && user.is_admin);
+  form.is_admin.disabled = Boolean(user && user.username === me.user);
+  $("user-dialog").showModal();
+}
+
+function openPassword(user) {
+  resetting = user;
+  $("password-form").reset();
+  $("password-error").textContent = "";
+  $("password-user").textContent = user.username;
+  $("password-dialog").showModal();
+}
+
+async function removeUser(user) {
+  if (!confirm(`¿Borrar el usuario ${user.username}?`)) return;
+  const result = await api(`/api/admin/users/${encodeURIComponent(user.username)}`, {method: "DELETE"});
+  if (!result.ok) alert(errorText(result.data, "No se pudo borrar el usuario"));
+  load();
+}
+
+$("user-form").onsubmit = async (event) => {
+  event.preventDefault();
+  const form = event.target;
+  const selected = [...form.querySelectorAll('input[name="collection"]:checked')].map((i) => i.value);
+  const result = editing
+    ? await api(`/api/admin/users/${encodeURIComponent(editing.username)}`, {
+        method: "PATCH",
+        json: form.is_admin.disabled
+          ? {collections: selected}
+          : {collections: selected, is_admin: form.is_admin.checked},
+      })
+    : await api("/api/admin/users", {
+        method: "POST",
+        json: {
+          username: form.username.value.trim(),
+          password: form.password.value,
+          collections: selected,
+          is_admin: form.is_admin.checked,
+        },
+      });
+  if (!result.ok) {
+    $("user-error").textContent = errorText(result.data, "No se pudo guardar");
+    return;
+  }
+  $("user-dialog").close();
+  load();
+};
+
+$("password-form").onsubmit = async (event) => {
+  event.preventDefault();
+  const result = await api(`/api/admin/users/${encodeURIComponent(resetting.username)}/password`, {
+    method: "POST",
+    json: {password: event.target.password.value},
+  });
+  if (!result.ok) {
+    $("password-error").textContent = errorText(result.data, "No se pudo cambiar la contraseña");
+    return;
+  }
+  $("password-dialog").close();
+};
+
+$("add-collection").onclick = () => {
+  const name = (prompt("Nombre de la colección (minúsculas, números, - o _):") || "").trim().toLowerCase();
+  if (!name) return;
+  if (!COLLECTION_RE.test(name)) { alert("Nombre no válido: usa minúsculas sin acentos, números, - o _."); return; }
+  const selected = [...document.querySelectorAll('input[name="collection"]:checked')].map((i) => i.value);
+  if (!collections.includes(name)) collections = [...collections, name];
+  renderCollectionOptions([...selected, name]);
+};
+
+for (const button of document.querySelectorAll("[data-close]")) {
+  button.onclick = () => button.closest("dialog").close();
+}
+
+const newUser = $("new-user");
+newUser.append(icon("plus"), "Nuevo usuario");
+newUser.onclick = () => openUser(null);
+
+startPage({adminOnly: true}).then((user) => { me = user; if (me) load(); });
+</script>
+</body>
+</html>
