@@ -96,3 +96,10 @@ def make_pdf(path, pages):
     ).encode()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(out)
+
+
+def write_doc(root, rel, text):
+    path = root / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return path
