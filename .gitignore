@@ -15,4 +15,10 @@ __pycache__/
 *.doc
 *.xlsx
 *.pptx
-!/examples/docs/**
+# Files uploaded from the panel during a quick start land in examples/docs.
+# Only the committed samples are tracked; anything new there stays out of git.
+/examples/docs/*/*
+/examples/docs/*.*
+
+# Local planning notes and mockups from the development workflow
+/.superpowers/

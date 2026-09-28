@@ -18,7 +18,7 @@ COPY README.md LICENSE ./
 COPY src ./src
 RUN uv sync --frozen --no-dev --extra local --no-editable
 
-RUN useradd --create-home app && mkdir -p /models && chown app /models
+RUN useradd --create-home --uid 1000 app && mkdir -p /models && chown app /models
 USER app
 
 EXPOSE 8000

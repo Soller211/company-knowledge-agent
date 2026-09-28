@@ -6,9 +6,9 @@ x-app: &app
     DATABASE_URL: postgresql://cka:${POSTGRES_PASSWORD:-cka}@db:5432/cka
     DOCS_DIR: /data/docs
   volumes:
-    # A missing DOCS_HOST_DIR is mounted as an empty folder; `cka ingest` refuses to treat
-    # an empty folder as "every document was deleted".
-    - ${DOCS_HOST_DIR:-./examples/docs}:/data/docs:ro
+    # Writable: the admin panel stores uploads here. A missing DOCS_HOST_DIR is mounted as an
+    # empty folder; `cka ingest` refuses to treat that as "every document was deleted".
+    - ${DOCS_HOST_DIR:-./examples/docs}:/data/docs
     - models:/models
   depends_on:
     db:

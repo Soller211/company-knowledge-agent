@@ -1,7 +1,7 @@
 # Panel de administración — Diseño
 
 Fecha: 2026-09-28
-Estado: pendiente de revisión
+Estado: implementado
 Base: [design.md](design.md) (v0.1.0)
 
 ## 1. Objetivo

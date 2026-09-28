@@ -36,11 +36,12 @@ cp .env.example .env
 # edit .env: set SECRET_KEY and the LLM_* variables (see "Choosing the model")
 docker compose up -d --build
 docker compose run --rm ingest          # first run downloads the bge-m3 model (~2 GB)
-docker compose run --rm api cka create-user ana --collections rrhh
+docker compose run --rm api cka create-user laura --admin   # first admin
 ```
 
-Open http://localhost:8000 and log in as `ana`. The repo ships with fictional sample documents
-in `examples/docs/` so you can try it right away.
+Open http://localhost:8000 and log in as `laura`. As an admin you can upload documents and
+create users from the web panel. The repo ships with fictional sample documents in
+`examples/docs/` so you can try it right away.
 
 ## Your documents and collections
 
@@ -69,6 +70,20 @@ are processed and deleted files are removed from the index. To run it every nigh
 0 2 * * * cd /opt/company-knowledge-agent && docker compose run --rm ingest >> ingest.log 2>&1
 ```
 
+## Admin panel
+
+Admins see two extra pages in the sidebar:
+
+- **Documents:** drag files in, pick (or create) a collection, and watch them go from
+  *Processing* to *Ready*. *No text* means a scanned PDF; *Error* shows the reason on hover.
+  **Sync folder** picks up changes made directly in the documents folder (e.g. OneDrive).
+- **Users:** create users with a temporary password, choose the collections they can read,
+  make them admins, reset passwords (signs them out) or delete them.
+
+Uploads are written into the documents folder itself (`DOCS_HOST_DIR/<collection>/`), so
+that folder must be writable by the container user (UID 1000). Collection names use
+lowercase letters, digits, `-` and `_`. API keys are still managed from the CLI.
+
 ## Choosing the model
 
 | Server | `.env` |
@@ -93,6 +108,7 @@ docker compose run --rm api cka create-user ana --collections rrhh,ventas
 docker compose run --rm api cka set-collections ana --collections rrhh
 docker compose run --rm api cka set-password ana
 docker compose run --rm api cka delete-user ana
+docker compose run --rm api cka set-admin ana          # --no to revoke
 docker compose run --rm api cka create-api-key intranet --collections general   # shown once
 docker compose run --rm api cka revoke-api-key intranet
 ```
